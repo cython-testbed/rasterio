@@ -24,7 +24,7 @@ from rasterio.enums import (
 from rasterio.env import Env
 from rasterio.errors import (
     RasterioIOError, CRSError, DriverRegistrationError,
-    NotGeoreferencedWarning, RasterioDeprecationWarning)
+    NotGeoreferencedWarning, RasterioDeprecationWarning, RasterBlockError)
 from rasterio.profiles import Profile
 from rasterio.transform import Affine, guard_transform, tastes_like_gdal
 from rasterio.vfs import parse_path, vsi_path
@@ -108,21 +108,35 @@ def driver_can_create_copy(drivername):
 cdef class DatasetBase(object):
     """Dataset base class."""
 
-    def __init__(self, path, options=None):
+    def __init__(self, path=None, options=None):
+        cdef GDALDriverH driver = NULL
+        cdef GDALDatasetH hds = NULL
+        cdef const char *path_c = NULL
+
+        self._hds = NULL
+
+        if path is not None:
+            path_b = vsi_path(*parse_path(path)).encode('utf-8')
+            path_c = path_b
+            try:
+                with nogil:
+                    hds = GDALOpenShared(path_c, <GDALAccess>0)
+                self._hds = exc_wrap_pointer(hds)
+            except CPLE_OpenFailedError as err:
+                raise RasterioIOError(str(err))
+
         self.name = path
         self.mode = 'r'
         self.options = options or {}
-        self._hds = NULL
-        self._count = 0
-        self._closed = True
         self._dtypes = []
         self._block_shapes = None
         self._nodatavals = []
         self._units = ()
         self._descriptions = ()
-        self._crs = None
         self._gcps = None
         self._read = False
+
+        self._set_attrs_from_dataset_handle()
 
     def __repr__(self):
         return "<%s DatasetBase name='%s' mode='%s'>" % (
@@ -130,35 +144,18 @@ cdef class DatasetBase(object):
             self.name,
             self.mode)
 
-    def start(self):
-        """Called to start reading a dataset."""
+    def _set_attrs_from_dataset_handle(self):
         cdef GDALDriverH driver = NULL
-        cdef GDALDatasetH hds = NULL
-        cdef const char *cypath
-
-        path = vsi_path(*parse_path(self.name))
-        path = path.encode('utf-8')
-        cypath = path
-
-        try:
-            with nogil:
-                hds = GDALOpenShared(cypath, <GDALAccess>0)
-            self._hds = exc_wrap_pointer(hds)
-        except CPLE_OpenFailedError as err:
-            raise RasterioIOError(err.errmsg)
-
         driver = GDALGetDatasetDriver(self._hds)
         self.driver = get_driver_name(driver)
-
         self._count = GDALGetRasterCount(self._hds)
         self.width = GDALGetRasterXSize(self._hds)
         self.height = GDALGetRasterYSize(self._hds)
         self.shape = (self.height, self.width)
-
         self._transform = self.read_transform()
         self._crs = self.read_crs()
 
-        # touch self.meta
+        # touch self.meta, triggering data type evaluation.
         _ = self.meta
 
         self._closed = False
@@ -449,6 +446,63 @@ cdef class DatasetBase(object):
                     GDALGetRasterUnitType(self.band(j)) for j in self.indexes)
             return self._units
 
+
+    def block_window(self, bidx, i, j):
+        """Returns the window for a particular block
+
+        Parameters
+        ----------
+        bidx: int
+            Band index, starting with 1.
+        i: int
+            Row index of the block, starting with 0.
+        j: int
+            Column index of the block, starting with 0.
+
+        Returns
+        -------
+        Window
+        """
+        h, w = self.block_shapes[bidx-1]
+        row = i * h
+        height = min(h, self.height - row)
+        col = j * w
+        width = min(w, self.width - col)
+        return windows.Window(col, row, width, height)
+
+    def block_size(self, bidx, i, j):
+        """Returns the size in bytes of a particular block
+
+        Only useful for TIFF formatted datasets.
+
+        Parameters
+        ----------
+        bidx: int
+            Band index, starting with 1.
+        i: int
+            Row index of the block, starting with 0.
+        j: int
+            Column index of the block, starting with 0.
+
+        Returns
+        -------
+        int
+        """
+        cdef GDALMajorObjectH obj = NULL
+        cdef char *value = NULL
+        cdef const char *key_c = NULL
+
+        obj = self.band(bidx)
+
+        key_b = 'BLOCK_SIZE_{0}_{1}'.format(j, i).encode('utf-8')
+        key_c = key_b
+        value = GDALGetMetadataItem(obj, key_c, 'TIFF')
+        if value == NULL:
+            raise RasterBlockError(
+                "Block i={0}, j={1} size can't be determined".format(i, j))
+        else:
+            return int(value)
+
     def block_windows(self, bidx=0):
         """Returns an iterator over a band's blocks and their corresponding
         windows.  Produces tuples like ``(block, window)``.  The primary use
@@ -528,6 +582,8 @@ cdef class DatasetBase(object):
         d, m = divmod(self.width, w)
         ncols = d + int(m>0)
 
+        # We could call self.block_window() inside the loops but this
+        # is faster and doesn't duplicate much code.
         for j in range(nrows):
             row = j * h
             height = min(h, self.height - row)
@@ -899,7 +955,7 @@ def _transform(src_crs, dst_crs, xs, ys, zs):
             retval = (res_xs, res_ys)
 
     except CPLE_NotSupportedError as exc:
-        raise CRSError(exc.errmsg)
+        raise CRSError(str(exc))
 
     finally:
         CPLFree(x)

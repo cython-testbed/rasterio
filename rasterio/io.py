@@ -16,6 +16,7 @@ from rasterio._io import (
 from rasterio import windows
 from rasterio.enums import Resampling
 from rasterio.env import ensure_env
+from rasterio.errors import RasterioDeprecationWarning
 from rasterio.transform import guard_transform, xy, rowcol
 
 
@@ -56,17 +57,6 @@ class TransformMethodsMixin(object):
         """
         return xy(self.transform, row, col, offset=offset)
 
-    def ul(self, row, col):
-        """Returns the coordinates (x, y) of the upper left corner of a
-        pixel at `row` and `col` in the units of the dataset's
-        coordinate reference system.
-
-        Deprecated; Use `xy(row, col, offset='ul')` instead.
-        """
-        warnings.warn("ul method is deprecated. Use xy(row, col, offset='ul')",
-                      DeprecationWarning)
-        return xy(self.transform, row, col, offset='ul')
-
     def index(self, x, y, op=math.floor, precision=6):
         """
         Returns the (row, col) index of the pixel containing (x, y) given a
@@ -105,36 +95,40 @@ class WindowMethodsMixin(object):
     properties: `transform`, `height` and `width`
     """
 
-    def window(self, left, bottom, right, top, boundless=True, precision=6):
+    def window(self, left, bottom, right, top, precision=6, **kwargs):
         """Get the window corresponding to the bounding coordinates.
+
+        The resulting window is not cropped to the row and column
+        limits of the dataset.
 
         Parameters
         ----------
-        left : float
+        left: float
             Left (west) bounding coordinate
-        bottom : float
+        bottom: float
             Bottom (south) bounding coordinate
-        right : float
+        right: float
             Right (east) bounding coordinate
-        top : float
+        top: float
             Top (north) bounding coordinate
-        boundless: boolean, optional
-            If boundless is False, window is limited
-            to extent of this dataset.
-        precision : int, optional
+        precision: int, optional
             Number of decimal points of precision when computing inverse
             transform.
+        kwargs: mapping
+            For backwards compatibility: absorbs deprecated keyword args.
 
         Returns
         -------
         window: Window
         """
+        if 'boundless' in kwargs:  # pragma: no branch
+            warnings.warn("boundless keyword arg should not be used",
+                          RasterioDeprecationWarning)
 
         transform = guard_transform(self.transform)
         return windows.from_bounds(
             left, bottom, right, top, transform=transform,
-            height=self.height, width=self.width, boundless=boundless,
-            precision=precision)
+            height=self.height, width=self.width, precision=precision)
 
     def window_transform(self, window):
         """Get the affine transform for a dataset window.
@@ -263,15 +257,13 @@ class MemoryFile(MemoryFileBase):
         if self.closed:
             raise IOError("I/O operation on closed file.")
         if self.exists():
-            s = DatasetReader(vsi_path, 'r+')
+            return DatasetReader(vsi_path, 'r+')
         else:
             writer = get_writer_for_driver(driver)
-            s = writer(vsi_path, 'w', driver=driver, width=width,
-                       height=height, count=count, crs=crs,
-                       transform=transform, dtype=dtype,
-                       nodata=nodata, **kwargs)
-        s.start()
-        return s
+            return writer(vsi_path, 'w', driver=driver, width=width,
+                          height=height, count=count, crs=crs,
+                          transform=transform, dtype=dtype,
+                          nodata=nodata, **kwargs)
 
     def __enter__(self):
         return self
@@ -308,9 +300,7 @@ class ZipMemoryFile(MemoryFile):
 
         if self.closed:
             raise IOError("I/O operation on closed file.")
-        s = DatasetReader(vsi_path, 'r')
-        s.start()
-        return s
+        return DatasetReader(vsi_path, 'r')
 
 
 def get_writer_for_driver(driver):
