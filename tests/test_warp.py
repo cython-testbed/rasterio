@@ -9,6 +9,7 @@ from packaging.version import parse
 
 import rasterio
 from rasterio.control import GroundControlPoint
+from rasterio.crs import CRS
 from rasterio.enums import Resampling
 from rasterio.errors import GDALBehaviorChangeException, CRSError
 from rasterio.warp import (
