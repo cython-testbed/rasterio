@@ -1,10 +1,13 @@
+"""Tests for ``rasterio.rio.options``."""
+
+
 import math
-import os.path
 import uuid
 
 import click
 import pytest
 
+from rasterio.enums import ColorInterp
 from rasterio.rio.options import (
     IgnoreOption, bounds_handler, file_in_handler, like_handler,
     edit_nodata_handler, nodata_handler, _cb_key_val)
@@ -83,10 +86,11 @@ def test_file_in_handler_with_vfs_nonexistent():
 
 def test_file_in_handler_with_vfs():
     """vfs file path is expanded"""
+    uri = 'zip://tests/data/files.zip!/inputs/RGB.byte.tif'
     ctx = MockContext()
-    retval = file_in_handler(
-        ctx, 'INPUT', 'zip://tests/data/files.zip!/inputs/RGB.byte.tif')
-    assert retval.endswith('tests/data/files.zip!/inputs/RGB.byte.tif')
+    with pytest.raises(click.BadParameter) as e:
+        file_in_handler(ctx, 'INPUT', uri)
+        assert uri in str(e) and 'is not valid' in str(e)
 
 
 def test_file_in_handler_with_vfs_file():
@@ -112,14 +116,16 @@ def test_file_in_handler_s3():
 
 def test_like_dataset_callback(data):
     ctx = MockContext()
-    like_handler(ctx, 'like', str(data.join('RGB.byte.tif')))
+    assert like_handler(ctx, 'like', str(data.join('RGB.byte.tif')))
     assert ctx.obj['like']['crs'] == {'init': 'epsg:32618'}
+    assert ctx.obj['like']['colorinterp'] == (
+        ColorInterp.red, ColorInterp.green, ColorInterp.blue)
 
 
 def test_like_dataset_callback_obj_init(data):
     ctx = MockContext()
     ctx.obj = None
-    like_handler(ctx, 'like', str(data.join('RGB.byte.tif')))
+    assert like_handler(ctx, 'like', str(data.join('RGB.byte.tif')))
     assert ctx.obj['like']['crs'] == {'init': 'epsg:32618'}
 
 

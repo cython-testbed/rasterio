@@ -1,3 +1,6 @@
+"""``pytest`` fixtures."""
+
+
 import functools
 import operator
 import os
@@ -5,13 +8,15 @@ import shutil
 import sys
 import zipfile
 
+import affine
 from click.testing import CliRunner
 import py
 import pytest
 import numpy as np
 
-from rasterio.crs import CRS
 import rasterio
+from rasterio.crs import CRS
+from rasterio.enums import ColorInterp
 
 
 DEFAULT_SHAPE = (10, 10)
@@ -22,7 +27,7 @@ if sys.version_info > (3,):
 
 test_files = [os.path.join(os.path.dirname(__file__), p) for p in [
     'data/RGB.byte.tif', 'data/float.tif', 'data/float_nan.tif',
-    'data/shade.tif']]
+    'data/shade.tif', 'data/RGBA.byte.tif']]
 
 
 def pytest_cmdline_main(config):
@@ -64,6 +69,128 @@ def basic_geometry():
         'type': 'Polygon',
         'coordinates': [[(2, 2), (2, 4.25), (4.25, 4.25), (4.25, 2), (2, 2)]]
     }
+
+
+@pytest.fixture
+def geojson_point():
+    """
+    Returns
+    -------
+
+    dict: GeoJSON-style Point geometry object.
+        Coordinates are in grid coordinates (Affine.identity()).
+    """
+
+    return {
+        'type': 'Point',
+        'coordinates': (2, 2)
+    }
+
+
+@pytest.fixture
+def geojson_multipoint():
+    """
+    Returns
+    -------
+
+    dict: GeoJSON-style MultiPoint geometry object.
+        Coordinates are in grid coordinates (Affine.identity()).
+    """
+
+    return {
+        'type': 'MultiPoint',
+        'coordinates': ((2, 2), (4, 4))
+    }
+
+
+@pytest.fixture
+def geojson_line():
+    """
+    Returns
+    -------
+
+    dict: GeoJSON-style LineString geometry object.
+        Coordinates are in grid coordinates (Affine.identity()).
+    """
+
+    return {
+        'type': 'LineString',
+        'coordinates': ((2, 2), (4, 4))
+    }
+
+
+@pytest.fixture
+def geojson_multiline():
+    """
+    Returns
+    -------
+
+    dict: GeoJSON-style MultiLineString geometry object.
+        Coordinates are in grid coordinates (Affine.identity()).
+    """
+
+    return {
+        'type': 'MultiLineString',
+        'coordinates': (((2, 2), (4, 4)), ((0, 0), (4, 0)))
+    }
+
+
+@pytest.fixture
+def geojson_polygon(basic_geometry):
+    """
+    Returns
+    -------
+
+    dict: GeoJSON-style Polygon geometry object.
+        Coordinates are in grid coordinates (Affine.identity()).
+    """
+
+    return basic_geometry
+
+
+@pytest.fixture
+def geojson_multipolygon():
+    """
+    Returns
+    -------
+
+    dict: GeoJSON-style MultiPolygon geometry object.
+        Coordinates are in grid coordinates (Affine.identity()).
+    """
+
+    return {
+        'type': 'MultiPolygon',
+        'coordinates': (
+            (((2, 2), (2, 4), (4, 4), (4, 2), (2, 2)), ),
+            (((0, 0), (0, 1), (1, 1), (1, 0), (0, 0)), )
+        )
+    }
+
+
+@pytest.fixture
+def geojson_geomcollection():
+    """
+    Returns
+    -------
+
+    dict: GeoJSON-style GeometryCollection object.
+        Coordinates are in grid coordinates (Affine.identity()).
+    """
+
+    return {
+        'type': 'GeometryCollection',
+        'geometries': (
+            {
+                'type': 'Polygon',
+                'coordinates': (((2, 2), (2, 4), (4, 4), (4, 2), (2, 2)), )
+            },
+            {
+                'type': 'Polygon',
+                'coordinates': (((0, 0), (0, 1), (1, 1), (1, 0), (0, 0)), )
+            }
+        )
+    }
+
 
 
 @pytest.fixture
@@ -264,6 +391,71 @@ def data_dir():
 @pytest.fixture(scope='session')
 def path_rgb_byte_tif(data_dir):
     return os.path.join(data_dir, 'RGB.byte.tif')
+
+
+@pytest.fixture(scope='session')
+def path_rgba_byte_tif(data_dir):
+    return os.path.join(data_dir, 'RGBA.byte.tif')
+
+
+@pytest.fixture(scope='function')
+def _path_multiband_no_colorinterp(tmpdir):
+
+    """Produces a function for generating an image with ``count`` bands
+    and undefined color interpretation.  May trigger a PAM file depending on
+    the GDAL version.
+
+    Returns
+    -------
+    function
+    """
+
+    def _create_path_multiband_no_colorinterp(count):
+        # For GDAL 2.2.2 the first band can be 'undefined', but on older
+        # versions it must be 'gray'.
+        undefined_ci = [ColorInterp.gray]
+        if count > 1:
+            undefined_ci += [ColorInterp.undefined] * (count - 1)
+        dst_path = str(tmpdir.join('4band-byte-no-ci.tif'))
+        profile = {
+            'height': 10,
+            'width': 10,
+            'count': count,
+            'dtype': rasterio.ubyte,
+            'transform': affine.Affine(1, 0.0, 0,
+                                       0.0, -1, 1),
+            'driver': 'GTiff',
+            'photometric': 'minisblack'
+        }
+
+        undefined_ci = tuple(undefined_ci)
+        with rasterio.open(dst_path, 'w', **profile) as src:
+            src.colorinterp = undefined_ci
+
+        # Ensure override occurred.  Setting color interpretation on an
+        # existing file is surrounded by traps and forceful GDAL assumptions,
+        # especially on older versions.
+        with rasterio.open(dst_path) as src:
+            if src.colorinterp != undefined_ci:
+                raise ValueError(
+                    "Didn't properly set color interpretation.  GDAL can "
+                    "forcefully make assumptions.")
+
+        return dst_path
+
+    return _create_path_multiband_no_colorinterp
+
+
+@pytest.fixture(scope='function')
+def path_3band_no_colorinterp(_path_multiband_no_colorinterp):
+    """A 3 band image with undefined color interpretation."""
+    return _path_multiband_no_colorinterp(3)
+
+
+@pytest.fixture(scope='function')
+def path_4band_no_colorinterp(_path_multiband_no_colorinterp):
+    """A 4 band image with undefined color interpretation."""
+    return _path_multiband_no_colorinterp(4)
 
 
 @pytest.fixture(scope='session')

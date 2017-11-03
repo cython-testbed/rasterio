@@ -6,8 +6,6 @@ include "directives.pxi"
 include "gdal.pxi"
 
 import logging
-import os
-import os.path
 import sys
 import uuid
 import warnings
@@ -23,7 +21,7 @@ from rasterio.compat import text_type, string_types
 from rasterio import dtypes
 from rasterio.enums import ColorInterp, MaskFlags, Resampling
 from rasterio.errors import CRSError, DriverRegistrationError
-from rasterio.errors import RasterioIOError
+from rasterio.errors import RasterioIOError, NotGeoreferencedWarning
 from rasterio.errors import NodataShadowWarning, WindowError
 from rasterio.sample import sample_gen
 from rasterio.transform import Affine
@@ -42,6 +40,33 @@ from rasterio._shim cimport (
 
 
 log = logging.getLogger(__name__)
+
+
+def _delete_dataset_if_exists(path):
+
+    """Delete dataset if it already exists.  Not a substitute for
+    ``rasterio.shutil.exists()`` and ``rasterio.shutil.delete()``.
+
+    Parameters
+    ----------
+    path : str
+        Dataset path
+    """
+
+    b_path = path.encode('utf-8')
+    cdef char* c_path = b_path
+    with nogil:
+        h_dataset = GDALOpenShared(c_path, <GDALAccess>0)
+    try:
+        h_dataset = exc_wrap_pointer(h_dataset)
+        h_driver = GDALGetDatasetDriver(h_dataset)
+        if h_driver != NULL:
+            with nogil:
+                GDALDeleteDataset(h_driver, c_path)
+    except CPLE_OpenFailedError:
+        pass
+    finally:
+        GDALClose(h_dataset)
 
 
 cdef bint in_dtype_range(value, dtype):
@@ -325,12 +350,13 @@ cdef class DatasetReaderBase(DatasetBase):
             with WarpedVRT(
                     self,
                     dst_nodata=ndv,
+                    src_crs=self.crs,
                     dst_crs=self.crs,
-                    dst_width=max(self.width, window.num_cols),
-                    dst_height=max(self.height, window.num_rows),
+                    dst_width=max(self.width, window.width) + 10,
+                    dst_height=max(self.height, window.height) + 10,
                     dst_transform=self.window_transform(window),
                     resampling=resampling) as vrt:
-                out = vrt._read(indexes, out, Window(0, 0, window.num_cols, window.num_rows), None)
+                out = vrt._read(indexes, out, Window(0, 0, window.width, window.height), None)
 
                 if masked:
                     if all_valid:
@@ -338,7 +364,7 @@ cdef class DatasetReaderBase(DatasetBase):
                     else:
                         mask = np.zeros(out.shape, 'uint8')
                         mask = ~vrt._read(
-                            indexes, mask, Window(0, 0, window.num_cols, window.num_rows), None, masks=True).astype('bool')
+                            indexes, mask, Window(0, 0, window.width, window.height), None, masks=True).astype('bool')
 
                     kwds = {'mask': mask}
                     # Set a fill value only if the read bands share a
@@ -470,11 +496,11 @@ cdef class DatasetReaderBase(DatasetBase):
             with WarpedVRT(
                     self,
                     dst_crs=self.crs,
-                    dst_width=max(self.width, window.num_cols),
-                    dst_height=max(self.height, window.num_rows),
+                    dst_width=max(self.width, window.width) + 10,
+                    dst_height=max(self.height, window.height) + 10,
                     dst_transform=self.window_transform(window),
                     resampling=resampling) as vrt:
-                out = vrt._read(indexes, out, Window(0, 0, window.num_cols, window.num_rows), None, masks=True)
+                out = vrt._read(indexes, out, Window(0, 0, window.width, window.height), None, masks=True)
 
         if return2d:
             out.shape = out.shape[1:]
@@ -541,7 +567,7 @@ cdef class DatasetReaderBase(DatasetBase):
 
         if masks:
             # Warn if nodata attribute is shadowing an alpha band.
-            if self.count == 4 and self.colorinterp(4) == ColorInterp.alpha:
+            if self.count == 4 and self.colorinterp[3] == ColorInterp.alpha:
                 for flags in self.mask_flag_enums:
                     if MaskFlags.nodata in flags:
                         warnings.warn(NodataShadowWarning())
@@ -599,7 +625,7 @@ cdef class DatasetReaderBase(DatasetBase):
             return self.read_masks(1, **kwargs)
 
         # use Alpha mask if available and looks like RGB, even if nodata is shadowing
-        elif self.count == 4 and self.colorinterp(1) == ColorInterp.red:
+        elif self.count == 4 and self.colorinterp[0] == ColorInterp.red:
             return self.read_masks(4, **kwargs)
 
         # Or use the binary OR intersection of all GDALGetMaskBands
@@ -890,9 +916,7 @@ cdef class DatasetWriterBase(DatasetReaderBase):
 
         if mode == 'w':
 
-            # Delete existing file, create.
-            if os.path.exists(path):
-                os.unlink(path)
+            _delete_dataset_if_exists(path)
 
             driver_b = driver.encode('utf-8')
             drv_name = driver_b
@@ -1107,7 +1131,7 @@ cdef class DatasetWriterBase(DatasetReaderBase):
             warnings.warn(
                 "Dataset uses default geotransform (Affine.identity). "
                 "No transform will be written to the output by GDAL.",
-                UserWarning
+                NotGeoreferencedWarning
             )
 
         cdef double gt[6]
@@ -1510,6 +1534,7 @@ cdef class DatasetWriterBase(DatasetReaderBase):
             self.set_gcps(values[0], values[1])
 
 
+
 cdef class InMemoryRaster:
     """
     Class that manages a single-band in memory GDAL raster dataset.  Data type
@@ -1797,8 +1822,7 @@ cdef class BufferedDatasetWriterBase(DatasetWriterBase):
         fname = name_b
 
         # Delete existing file, create.
-        if os.path.exists(self.name):
-            os.unlink(self.name)
+        _delete_dataset_if_exists(self.name)
 
         driver_b = self.driver.encode('utf-8')
         drv_name = driver_b
