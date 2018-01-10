@@ -1,12 +1,14 @@
 import json
 
 from click.testing import CliRunner
-from packaging.version import Version, parse
 import pytest
 
 import numpy as np
 import rasterio
 from rasterio.rio.main import main_group
+from rasterio.env import GDALVersion
+
+from .conftest import requires_gdal21
 
 
 with rasterio.Env() as env:
@@ -31,37 +33,6 @@ def test_delete_crs_exclusive_opts(data):
     assert result.exit_code == 2
 
 
-@pytest.mark.skip(
-    parse(rasterio.__gdal_version__) < parse('1.10'),
-    reason='GDAL version >= 1.10 required')
-def test_unset_crs(data):
-    runner = CliRunner()
-    inputfile = str(data.join('RGB.byte.tif'))
-    result = runner.invoke(main_group,
-                           ['edit-info', inputfile, '--unset-crs'])
-    assert result.exit_code == 0
-    with rasterio.open(inputfile) as src:
-        assert src.crs is None
-
-
-@pytest.mark.skip(
-    parse(rasterio.__gdal_version__) >= parse('1.10'),
-    reason='Test applies to GDAL version < 1.10')
-def test_unset_crs_gdal19(data):
-    """unsetting crs doesn't work for geotiff and gdal 1.9
-    and should emit an warning"""
-    runner = CliRunner()
-    inputfile = str(data.join('RGB.byte.tif'))
-    with rasterio.open(inputfile) as src:
-        orig_crs = src.crs
-    with pytest.warns(UserWarning):
-        result = runner.invoke(main_group,
-                               ['edit-info', inputfile, '--unset-crs'])
-    assert result.exit_code == 0
-    with rasterio.open(inputfile) as src:
-        assert src.crs == orig_crs  # nochange
-
-
 def test_edit_nodata_err(data):
     runner = CliRunner()
     inputfile = str(data.join('RGB.byte.tif'))
@@ -70,9 +41,7 @@ def test_edit_nodata_err(data):
     assert result.exit_code == 2
 
 
-@pytest.mark.xfail(
-    Version(rasterio.__gdal_version__) < Version('2.1'),
-    reason='GDAL version >= 2.1 required')
+@requires_gdal21
 def test_delete_nodata(data):
     """Delete a dataset's nodata value"""
     runner = CliRunner()
@@ -706,8 +675,7 @@ def test_info_checksums_only():
     assert result.output.strip() == '29131'
 
 
-@pytest.mark.skipif(parse(rasterio.__gdal_version__) < parse('2.1'),
-                    reason='netCDF requires GDAL 2.1+')
+@requires_gdal21(reason="NetCDF requires GDAL 2.1+")
 @pytest.mark.skipif(not HAVE_NETCDF,
                     reason="GDAL not compiled with NetCDF driver.")
 def test_info_subdatasets():

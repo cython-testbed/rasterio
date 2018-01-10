@@ -15,7 +15,7 @@ import numpy as np
 from rasterio._base import tastes_like_gdal
 from rasterio._env import driver_count, GDALEnv
 from rasterio._err import (
-    GDALError, CPLE_OpenFailedError, CPLE_IllegalArgError)
+    GDALError, CPLE_OpenFailedError, CPLE_IllegalArgError, CPLE_BaseError)
 from rasterio.crs import CRS
 from rasterio.compat import text_type, string_types
 from rasterio import dtypes
@@ -44,17 +44,26 @@ log = logging.getLogger(__name__)
 
 def _delete_dataset_if_exists(path):
 
-    """Delete dataset if it already exists.  Not a substitute for
-    ``rasterio.shutil.exists()`` and ``rasterio.shutil.delete()``.
+    """Delete a dataset if it already exists.  This operates at a lower
+    level than a:
+
+        if rasterio.shutil.exists(path):
+            rasterio.shutil.delete(path)
+
+    and can take some shortcuts.
 
     Parameters
     ----------
     path : str
-        Dataset path
+        Dataset path.
     """
 
-    b_path = path.encode('utf-8')
-    cdef char* c_path = b_path
+    cdef GDALDatasetH h_dataset = NULL
+    cdef const char *c_path = NULL
+
+    path = path.encode('utf-8')
+    c_path = path
+
     with nogil:
         h_dataset = GDALOpenShared(c_path, <GDALAccess>0)
     try:
@@ -64,7 +73,8 @@ def _delete_dataset_if_exists(path):
             with nogil:
                 GDALDeleteDataset(h_driver, c_path)
     except CPLE_OpenFailedError:
-        pass
+        log.debug(
+            "Skipped delete for overwrite.  Dataset does not exist: %s", path)
     finally:
         GDALClose(h_dataset)
 
@@ -119,7 +129,10 @@ cdef class DatasetReaderBase(DatasetBase):
     def read(self, indexes=None, out=None, window=None, masked=False,
             out_shape=None, boundless=False, resampling=Resampling.nearest,
             fill_value=None):
-        """Read raster bands as a multidimensional array
+        """Read a dataset's raw pixels as an N-d array
+
+        This data is read from the dataset's band cache, which means
+        that repeated reads of the same windows may avoid I/O.
 
         Parameters
         ----------
@@ -166,6 +179,12 @@ cdef class DatasetReaderBase(DatasetBase):
             If `True`, windows that extend beyond the dataset's extent
             are permitted and partially or completely filled arrays will
             be returned as appropriate.
+
+        resampling : Resampling
+            By default, pixel values are read raw or interpolated using
+            a nearest neighbor algorithm from the band cache. Other
+            resampling algorithms may be specified. Resampled pixels
+            are not cached.
 
         fill_value : scalar
             Fill value applied in the `boundless=True` case only.
@@ -355,10 +374,10 @@ cdef class DatasetReaderBase(DatasetBase):
                     dst_width=max(self.width, window.width) + 1,
                     dst_height=max(self.height, window.height) + 1,
                     dst_transform=self.window_transform(window),
-                    resampling=resampling) as vrt:
+                    resampling=Resampling.nearest) as vrt:
                 out = vrt._read(
                     indexes, out, Window(0, 0, window.width, window.height),
-                    None)
+                    None, resampling=resampling)
 
                 if masked:
                     if all_valid:
@@ -385,6 +404,9 @@ cdef class DatasetReaderBase(DatasetBase):
     def read_masks(self, indexes=None, out=None, out_shape=None, window=None,
                    boundless=False, resampling=Resampling.nearest):
         """Read raster band masks as a multidimensional array
+
+        This data is read from the dataset's band cache, which means
+        that repeated reads of the same windows may avoid I/O.
 
         Parameters
         ----------
@@ -421,6 +443,12 @@ cdef class DatasetReaderBase(DatasetBase):
             If `True`, windows that extend beyond the dataset's extent
             are permitted and partially or completely filled arrays will
             be returned as appropriate.
+
+        resampling : Resampling
+            By default, pixel values are read raw or interpolated using
+            a nearest neighbor algorithm from the band cache. Other
+            resampling algorithms may be specified. Resampled pixels
+            are not cached.
 
         Returns
         -------
@@ -501,10 +529,10 @@ cdef class DatasetReaderBase(DatasetBase):
                     dst_width=max(self.width, window.width) + 1,
                     dst_height=max(self.height, window.height) + 1,
                     dst_transform=self.window_transform(window),
-                    resampling=resampling) as vrt:
+                    resampling=Resampling.nearest) as vrt:
                 out = vrt._read(
                     indexes, out, Window(0, 0, window.width, window.height),
-                    None, masks=True)
+                    None, resampling=resampling, masks=True)
 
         if return2d:
             out.shape = out.shape[1:]
@@ -1430,11 +1458,16 @@ cdef class DatasetWriterBase(DatasetReaderBase):
 
         band = self.band(1)
 
+        if not all(MaskFlags.per_dataset in flags for flags in self.mask_flag_enums):
+            try:
+                exc_wrap_int(GDALCreateMaskBand(band, MaskFlags.per_dataset))
+                log.debug("Created mask band")
+            except CPLE_BaseError:
+                raise RasterioIOError("Failed to create mask.")
+
         try:
-            exc_wrap_int(GDALCreateMaskBand(band, 0x02))
             mask = exc_wrap_pointer(GDALGetMaskBand(band))
-            log.debug("Created mask band")
-        except:
+        except CPLE_BaseError:
             raise RasterioIOError("Failed to get mask.")
 
         if window:
@@ -1869,11 +1902,15 @@ cdef class BufferedDatasetWriterBase(DatasetWriterBase):
         try:
             temp = exc_wrap_pointer(
                 GDALCreateCopy(drv, fname, self._hds, 1, options, NULL, NULL))
+            log.debug("Created copy from MEM file: %s", self.name)
         finally:
             if options != NULL:
                 CSLDestroy(options)
             if temp != NULL:
                 GDALClose(temp)
+            if self._hds != NULL:
+                GDALClose(self._hds)
+                self._hds = NULL
 
 
 def virtual_file_to_buffer(filename):

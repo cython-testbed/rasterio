@@ -1,16 +1,15 @@
 import logging
 import subprocess
-import sys
 import json
 
-from packaging.version import parse
 import pytest
 
 import rasterio
 from rasterio._base import _can_create_osr
 from rasterio.crs import CRS
 from rasterio.errors import CRSError
-from rasterio.io import DatasetWriter
+
+from .conftest import requires_gdal21, requires_gdal22
 
 
 @pytest.fixture(scope='session')
@@ -196,9 +195,9 @@ def test_can_create_osr_invalid(arg):
     assert not _can_create_osr(arg)
 
 
-@pytest.mark.xfail()
+@requires_gdal22(
+    reason="GDAL bug resolved in 2.2+ allowed invalid CRS to be created")
 def test_can_create_osr_invalid_epsg_0():
-    """this invalid CRS should fail, but doesn't because of a GDAL bug"""
     assert not _can_create_osr('EPSG:')
 
 
@@ -243,7 +242,7 @@ def test_safe_osr_release(tmpdir):
     assert "Pointer 'hSRS' is NULL in 'OSRRelease'" not in log
 
 
-@pytest.mark.xfail(parse(rasterio.__gdal_version__) < parse('2.1'), reason="CRS equality is buggy pre-2.1")
+@requires_gdal21(reason="CRS equality is buggy pre-2.1")
 def test_from_wkt():
     wgs84 = CRS.from_string('+proj=longlat +datum=WGS84 +no_defs')
     from_wkt = CRS.from_wkt(wgs84.wkt)

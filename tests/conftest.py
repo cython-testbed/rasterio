@@ -17,6 +17,7 @@ import numpy as np
 import rasterio
 from rasterio.crs import CRS
 from rasterio.enums import ColorInterp
+from rasterio.env import GDALVersion
 
 
 DEFAULT_SHAPE = (10, 10)
@@ -484,6 +485,11 @@ def path_float_tif(data_dir):
 
 
 @pytest.fixture(scope='session')
+def path_alpha_tif(data_dir):
+    return os.path.join(data_dir, 'alpha.tif')
+
+
+@pytest.fixture(scope='session')
 def path_zip_file():
     """Creates ``coutwildrnp.zip`` if it does not exist and returns
     the absolute file path."""
@@ -494,3 +500,23 @@ def path_zip_file():
                              '389225main_sw_1965_1024.jpg']:
                 zip.write(os.path.join(data_dir(), filename), filename)
     return path
+
+
+# Define helpers to skip tests based on GDAL version
+gdal_version = GDALVersion.runtime()
+
+requires_only_gdal1 = pytest.mark.skipif(
+    gdal_version.major != 1,
+    reason="Only relevant for GDAL 1.x")
+
+requires_gdal2 = pytest.mark.skipif(
+    not gdal_version.major >= 2,
+    reason="Requires GDAL 2.x")
+
+requires_gdal21 = pytest.mark.skipif(
+    not gdal_version.at_least('2.1'),
+    reason="Requires GDAL 2.1.x")
+
+requires_gdal22 = pytest.mark.skipif(
+    not gdal_version.at_least('2.2'),
+    reason="Requires GDAL 2.2.x")

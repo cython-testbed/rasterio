@@ -8,7 +8,6 @@ import logging
 import affine
 from click.testing import CliRunner
 import numpy as np
-from packaging.version import parse
 from pytest import fixture
 import pytest
 
@@ -17,12 +16,7 @@ from rasterio.merge import merge
 from rasterio.rio.main import main_group
 from rasterio.transform import Affine
 
-
-# Custom markers.
-xfail_pixel_sensitive_gdal2 = pytest.mark.xfail(
-    parse(rasterio.__gdal_version__) < parse('2.0dev'),
-    reason="This test is sensitive to pixel values and requires GDAL 2.0+")
-
+from .conftest import requires_gdal22
 
 # Fixture to create test datasets within temporary directory
 @fixture(scope='function')
@@ -99,7 +93,8 @@ def test_merge_with_colormap(test_data_dir_1):
         assert cmap[255] == (0, 0, 0, 255)
 
 
-@xfail_pixel_sensitive_gdal2
+@requires_gdal22(
+    reason="This test is sensitive to pixel values and requires GDAL 2.2+")
 def test_merge_with_nodata(test_data_dir_1):
     outputname = str(test_data_dir_1.join('merged.tif'))
     inputs = [str(x) for x in test_data_dir_1.listdir()]
@@ -130,7 +125,8 @@ def test_merge_warn(test_data_dir_1):
     assert os.path.exists(outputname)
 
 
-@xfail_pixel_sensitive_gdal2
+@requires_gdal22(
+    reason="This test is sensitive to pixel values and requires GDAL 2.2+")
 def test_merge_without_nodata(test_data_dir_2):
     outputname = str(test_data_dir_2.join('merged.tif'))
     inputs = [str(x) for x in test_data_dir_2.listdir()]
@@ -274,10 +270,8 @@ def test_data_dir_float(tmpdir):
     return tmpdir
 
 
-@xfail_pixel_sensitive_gdal2
-@pytest.mark.xfail(
-    os.environ.get('GDALVERSION', 'a.b.c').startswith('1.9'),
-    reason="GDAL 1.9 doesn't catch this error")
+@requires_gdal22(
+    reason="This test is sensitive to pixel values and requires GDAL 2.2+")
 def test_merge_float(test_data_dir_float):
     outputname = str(test_data_dir_float.join('merged.tif'))
     inputs = [str(x) for x in test_data_dir_float.listdir()]
@@ -381,7 +375,8 @@ def test_merge_tiny_output_opt(tiffs):
         assert data[0][3][0] == 40
 
 
-@xfail_pixel_sensitive_gdal2
+@requires_gdal22(
+    reason="This test is sensitive to pixel values and requires GDAL 2.2+")
 @pytest.mark.xfail(sys.version_info < (3,),
                    reason="Test is sensitive to rounding behavior")
 def test_merge_tiny_res_bounds(tiffs):
@@ -425,5 +420,5 @@ def test_merge_rgb(tmpdir):
 def test_merge_tiny_intres(tiffs):
     inputs = [str(x) for x in tiffs.listdir()]
     inputs.sort()
-    sources = [rasterio.open(x) for x in inputs]
-    merge(sources, res=2)
+    datasets = [rasterio.open(x) for x in inputs]
+    merge(datasets, res=2)
