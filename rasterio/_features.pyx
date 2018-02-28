@@ -269,7 +269,10 @@ def _rasterize(shapes, image, transform, all_touched, merge_alg):
         that are selected by Bresenham's line algorithm will be burned
         in.
     merge_alg : str, required
-        'REPLACE' (the default) or 'ADD'
+        Merge algorithm to use.  One of:
+            MergeAlg.replace (default): the new value will overwrite the
+                existing value.
+            MergeAlg.add: the new value will be added to the existing raster.
     """
     cdef int retval
     cdef size_t i
@@ -282,7 +285,7 @@ def _rasterize(shapes, image, transform, all_touched, merge_alg):
     try:
         if all_touched:
             options = CSLSetNameValue(options, "ALL_TOUCHED", "TRUE")
-        merge_algorithm = MergeAlg[merge_alg].value.encode('utf-8')
+        merge_algorithm = merge_alg.value.encode('utf-8')
         options = CSLSetNameValue(options, "MERGE_ALG", merge_algorithm)
 
         # GDAL needs an array of geometries.
@@ -334,7 +337,7 @@ def _explode(coords):
                 yield f
 
 
-def _bounds(geometry, north_up=True):
+def _bounds(geometry, north_up=True, transform=None):
     """Bounding box of a GeoJSON geometry.
 
     left, bottom, right, top
@@ -362,11 +365,17 @@ def _bounds(geometry, north_up=True):
             return min(xmins), max(ymaxs), max(xmaxs), min(ymins)
 
     else:
-        xyz = tuple(zip(*list(_explode(geometry['coordinates']))))
-        if north_up:
-            return min(xyz[0]), min(xyz[1]), max(xyz[0]), max(xyz[1])
-        else:
+        if transform is not None:
+            xyz = list(_explode(geometry['coordinates']))
+            xyz_px = [point * transform for point in xyz]
+            xyz = tuple(zip(*xyz_px))
             return min(xyz[0]), max(xyz[1]), max(xyz[0]), min(xyz[1])
+        else:
+            xyz = tuple(zip(*list(_explode(geometry['coordinates']))))
+            if north_up:
+                return min(xyz[0]), min(xyz[1]), max(xyz[0]), max(xyz[1])
+            else:
+                return min(xyz[0]), max(xyz[1]), max(xyz[0]), min(xyz[1])
 
 
 # Mapping of OGR integer geometry types to GeoJSON type names.

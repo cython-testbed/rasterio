@@ -218,7 +218,7 @@ cdef class DatasetReaderBase(DatasetBase):
         # Check each index before processing 3D array
         for bidx in indexes:
             if bidx not in self.indexes:
-                raise IndexError("band index out of range")
+                raise IndexError("band index {} out of range (not in {})".format(bidx, self.indexes))
             idx = self.indexes.index(bidx)
 
             dtype = self.dtypes[idx]
@@ -898,7 +898,7 @@ cdef class DatasetWriterBase(DatasetReaderBase):
 
     def __init__(self, path, mode, driver=None, width=None, height=None,
                  count=None, crs=None, transform=None, dtype=None, nodata=None,
-                 gcps=None, **kwargs):
+                 gcps=None, sharing=True, **kwargs):
         """Initialize a DatasetWriterBase instance."""
         cdef char **options = NULL
         cdef char *key_c = NULL
@@ -908,6 +908,7 @@ cdef class DatasetWriterBase(DatasetReaderBase):
         cdef GDALRasterBandH band = NULL
         cdef const char *fname = NULL
         cdef int flags = 0
+        cdef int sharing_flag = (0x20 if sharing else 0x0)
 
         # Validate write mode arguments.
         log.debug("Path: %s, mode: %s, driver: %s", path, mode, driver)
@@ -1025,7 +1026,7 @@ cdef class DatasetWriterBase(DatasetReaderBase):
                 driver = [driver]
 
             # flags: Update + Raster + Errors
-            flags = 0x01 | 0x02 | 0x40
+            flags = 0x01 | sharing_flag | 0x40
 
             try:
                 self._hds = open_dataset(path, flags, driver, kwargs, None)
@@ -1257,13 +1258,14 @@ cdef class DatasetWriterBase(DatasetReaderBase):
             src = np.array([src])
         if len(src.shape) != 3 or src.shape[0] != len(indexes):
             raise ValueError(
-                "Source shape is inconsistent with given indexes")
+                "Source shape {} is inconsistent with given indexes {}"
+                .format(src.shape, len(indexes)))
 
         check_dtypes = set()
         # Check each index before processing 3D array
         for bidx in indexes:
             if bidx not in self.indexes:
-                raise IndexError("band index out of range")
+                raise IndexError("band index {} out of range (not in {})".format(bidx, self.indexes))
             idx = self.indexes.index(bidx)
             check_dtypes.add(self.dtypes[idx])
         if len(check_dtypes) > 1:

@@ -111,13 +111,12 @@ def file_in_handler(ctx, param, value):
     """Normalize ordinary filesystem and VFS paths"""
     try:
         path, archive, scheme = parse_path(value)
-        path_to_check = archive or path
 
         # Validate existence of files.
         if scheme in FILE_SCHEMES and not \
-                rasterio.shutil.exists(path_to_check):
+                rasterio.shutil.exists(value):
             raise IOError(
-                "Input file {0} does not exist".format(path_to_check))
+                "Input file {0} does not exist".format(value))
 
         if archive and scheme:
             archive = abspath_forward_slashes(archive)
@@ -222,6 +221,15 @@ bidx_opt = click.option(
     help="Input file band index (default: 1).")
 
 bidx_mult_opt = click.option(
+    '-b', '--bidx',
+    type=int,
+    multiple=True,
+    help="Indexes of input file bands.")
+
+# The 'magic' --bidx option is especially for rio-stack, which supports
+# selection of multiple bands from multiple files. It has 'str' type
+# instead of 'int' to support ranges in a syntax like `--bidx 1..3`.
+bidx_magic_opt = click.option(
     '-b', '--bidx',
     multiple=True,
     help="Indexes of input file bands.")

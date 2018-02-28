@@ -73,6 +73,24 @@ def basic_geometry():
 
 
 @pytest.fixture
+def rotation_geometry():
+    """
+    Returns
+    -------
+
+    dict: GeoJSON-style geometry object.
+        Coordinates are in grid coordinates (Affine.identity()).
+    """
+
+    return {
+        'type': 'Polygon',
+        'coordinates': [[(481070, 4481140), (481040, 4481160),
+                         (481035, 4481130), (481060, 4481125),
+                         (481070, 4481140)]]
+    }
+
+
+@pytest.fixture
 def geojson_point():
     """
     Returns
@@ -392,6 +410,45 @@ def pixelated_image_file(tmpdir, pixelated_image):
     return outfilename
 
 
+@pytest.fixture()
+def rotated_image_file(tmpdir, pixelated_image):
+    """
+    A basic raster file with a 1000x2000 array for testing sieve functions.
+    Contains only one value: 128.
+
+    Returns
+    -------
+
+    string
+        Filename of test raster file
+    """
+
+    from affine import Affine
+    import rasterio
+
+    image = 128 * np.ones((1000, 2000), dtype=np.uint8)
+
+    rotated_transform = Affine(-0.05, 0.07, 481060,
+                                0.07, 0.05, 4481030)
+
+    outfilename = str(tmpdir.join('rotated_image.tif'))
+    kwargs = {
+        "crs": CRS({'init': 'epsg:32613'}),
+        "transform": rotated_transform,
+        "count": 1,
+        "dtype": rasterio.uint8,
+        "driver": "GTiff",
+        "width": image.shape[1],
+        "height": image.shape[0],
+        "nodata": 255,
+        "compress": "lzw"
+    }
+    with rasterio.open(outfilename, 'w', **kwargs) as out:
+        out.write(image, indexes=1)
+
+    return outfilename
+
+
 @pytest.fixture(scope='function')
 def gdalenv(request):
     import rasterio.env
@@ -500,6 +557,12 @@ def path_zip_file():
                              '389225main_sw_1965_1024.jpg']:
                 zip.write(os.path.join(data_dir(), filename), filename)
     return path
+
+
+class MockGeoInterface(object):
+    """Tiny wrapper for GeoJSON to present an object with __geo_interface__ for testing"""
+    def __init__(self, geojson):
+        self.__geo_interface__ = geojson
 
 
 # Define helpers to skip tests based on GDAL version

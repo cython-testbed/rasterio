@@ -2,12 +2,14 @@
 
 
 import logging
-
+import warnings
 import numpy as np
 
 from rasterio._features import _shapes, _sieve, _rasterize, _bounds
 from rasterio.dtypes import validate_dtype, can_cast_dtype, get_minimum_dtype
+from rasterio.enums import MergeAlg
 from rasterio.env import ensure_env
+from rasterio.errors import RasterioDeprecationWarning
 from rasterio.transform import IDENTITY, guard_transform
 from rasterio.windows import Window
 
@@ -153,7 +155,7 @@ def rasterize(
         out=None,
         transform=IDENTITY,
         all_touched=False,
-        merge_alg='replace',
+        merge_alg=MergeAlg.replace,
         default_value=1,
         dtype=None):
     """Return an image array with input geometries burned in.
@@ -180,8 +182,10 @@ def rasterize(
         false, only pixels whose center is within the polygon or that
         are selected by Bresenham's line algorithm will be burned in.
     merge_alg : str, optional
-        If `replace` (default), the new value will overwrite the existing value.
-        If `add`, the new value will be added to the existing raster.
+        Merge algorithm to use.  One of:
+            MergeAlg.replace (default): the new value will overwrite the
+                existing value.
+            MergeAlg.add: the new value will be added to the existing raster.
     default_value : int or float, optional
         Used as value for all geometries, if not provided in `shapes`.
     dtype : rasterio or numpy data type, optional
@@ -200,6 +204,14 @@ def rasterize(
     rasterio.float64.
 
     """
+
+    # merge_alg usage deprecation warning.  Can be removed in rasterio 1.0
+    if not isinstance(merge_alg, MergeAlg):
+        warnings.warn("merge_alg must be MergeAlg.add or MergeAlg.replace, "
+                      "not a 'replace' or 'add'.  This usage has been "
+                      "deprecated.", RasterioDeprecationWarning)
+        merge_alg = MergeAlg[merge_alg]
+
     valid_dtypes = (
         'int16', 'int32', 'uint8', 'uint16', 'uint32', 'float32', 'float64'
     )
@@ -247,7 +259,18 @@ def rasterize(
                 'Invalid geometry object at index {0}'.format(index)
             )
 
-        valid_shapes.append((geom, value))
+        if geom['type'] == 'GeometryCollection':
+            # GeometryCollections need to be handled as individual parts to
+            # avoid holes in output:
+            # https://github.com/mapbox/rasterio/issues/1253.
+            # Only 1-level deep since GeoJSON spec discourages nested
+            # GeometryCollections
+            for part in geom['geometries']:
+                valid_shapes.append((part, value))
+
+        else:
+            valid_shapes.append((geom, value))
+
         shape_values.append(value)
 
     if not valid_shapes:
@@ -290,29 +313,33 @@ def rasterize(
     return out
 
 
-def bounds(geometry, north_up=True):
+def bounds(geometry, north_up=True, transform=None):
     """Return a (left, bottom, right, top) bounding box.
 
     From Fiona 1.4.8. Modified to return bbox from geometry if available.
 
     Parameters
     ----------
-    geometry: GeoJSON-like feature, feature collection, or geometry.
+    geometry: GeoJSON-like feature (implements __geo_interface__),
+              feature collection, or geometry.
 
     Returns
     -------
     tuple
         Bounding box: (left, bottom, right, top)
     """
+
+    geometry = getattr(geometry, '__geo_interface__', None) or geometry
+
     if 'bbox' in geometry:
         return tuple(geometry['bbox'])
 
     geom = geometry.get('geometry') or geometry
-    return _bounds(geom, north_up=north_up)
+    return _bounds(geom, north_up=north_up, transform=transform)
 
 
 def geometry_window(dataset, shapes, pad_x=0, pad_y=0, north_up=True,
-                    pixel_precision=3):
+                    rotated=False, pixel_precision=3):
     """Calculate the window within the raster that fits the bounds of the
     geometry plus optional padding.  The window is the outermost pixel indices
     that contain the geometry (floor of offsets, ceiling of width and height).
@@ -335,6 +362,9 @@ def geometry_window(dataset, shapes, pad_x=0, pad_y=0, north_up=True,
     north_up: bool
         If True (default), the origin point of the raster's transform is the
         northernmost point and y pixel values are negative.
+    rotated: bool
+        If true, some rotation terms exist in the dataset transform (this
+        requires special attention.)
     pixel_precision: int
         Number of places of rounding precision for evaluating bounds of shapes.
 
@@ -349,18 +379,36 @@ def geometry_window(dataset, shapes, pad_x=0, pad_y=0, north_up=True,
     if pad_y:
         pad_y = abs(pad_y * dataset.res[1])
 
-    all_bounds = [bounds(shape, north_up=north_up) for shape in shapes]
-    lefts, bottoms, rights, tops = zip(*all_bounds)
+    if not rotated:
+        all_bounds = [bounds(shape, north_up=north_up) for shape in shapes]
+        lefts, bottoms, rights, tops = zip(*all_bounds)
 
-    left = min(lefts) - pad_x
-    right = max(rights) + pad_x
+        left = min(lefts) - pad_x
+        right = max(rights) + pad_x
 
-    if north_up:
-        bottom = min(bottoms) - pad_y
-        top = max(tops) + pad_y
+        if north_up:
+            bottom = min(bottoms) - pad_y
+            top = max(tops) + pad_y
+        else:
+            bottom = max(bottoms) + pad_y
+            top = min(tops) - pad_y
     else:
-        bottom = max(bottoms) + pad_y
+        # get the bounds in the pixel domain by specifying a transform to the bounds function
+        all_bounds_px = [bounds(shape, transform=~dataset.transform) for shape in shapes]
+        # get left, right, top, and bottom as above
+        lefts, bottoms, rights, tops = zip(*all_bounds_px)
+        left = min(lefts) - pad_x
+        right = max(rights) + pad_x
         top = min(tops) - pad_y
+        bottom = max(bottoms) + pad_y
+        # do some clamping if there are any values less than zero or greater than dataset shape
+        left = max(0, left)
+        top = max(0, top)
+        right = min(dataset.shape[1], right)
+        bottom = min(dataset.shape[0], bottom)
+        # convert the bounds back to the CRS domain
+        left, top = (left, top) * dataset.transform
+        right, bottom = (right, bottom) * dataset.transform
 
     window = dataset.window(left, bottom, right, top)
     window = window.round_offsets(op='floor', pixel_precision=pixel_precision)
