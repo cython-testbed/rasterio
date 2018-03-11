@@ -50,7 +50,7 @@ install:
   - "if [ \"$GDALVERSION\" == \"trunk\" -o $(gdal-config --version) == \"$GDALVERSION\" ]; then echo \"Using gdal $GDALVERSION\"; else echo \"NOT using gdal $GDALVERSION as expected; aborting\"; exit 1; fi"
   - "pip wheel -r requirements-dev.txt"
   - "pip install -r requirements-dev.txt"
-  - "pip install --install-option=--no-cython-compile https://github.com/cython/cython/archive/5b8315f70d30282c2c752a6b4ad4bf7c8e3c3d31.zip"
+  - "pip install --install-option=--no-cython-compile https://github.com/cython/cython/archive/d2c743a021027225475b452e39e1dfd8b5fb699a.zip"
   - "GDAL_CONFIG=$GDALINST/gdal-$GDALVERSION/bin/gdal-config pip install --upgrade --force-reinstall -e .[test,plot]"
   - "pip install coveralls>=1.1"
   - "rio --version"
