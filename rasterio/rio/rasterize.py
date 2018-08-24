@@ -18,7 +18,7 @@ from rasterio.rio.helpers import resolve_inout
 import rasterio.shutil
 
 
-logger = logging.getLogger('rio')
+logger = logging.getLogger(__name__)
 
 
 # Common options used below
@@ -28,7 +28,8 @@ files_inout_arg = click.argument(
     'files',
     nargs=-1,
     type=click.Path(resolve_path=True),
-    metavar="INPUTS... OUTPUT")
+    metavar="INPUTS... OUTPUT",
+    callback=options.files_inout_handler)
 
 
 @click.command(short_help='Rasterize features.')
@@ -53,7 +54,8 @@ files_inout_arg = click.argument(
 @click.option('--property', 'prop', type=str, default=None, help='Property in '
               'GeoJSON features to use for rasterized values.  Any features '
               'that lack this property will be given --default_value instead.')
-@options.force_overwrite_opt
+@options.overwrite_opt
+@options.nodata_opt
 @options.creation_options
 @click.pass_context
 def rasterize(
@@ -70,53 +72,56 @@ def rasterize(
         default_value,
         fill,
         prop,
-        force_overwrite,
+        overwrite,
+        nodata,
         creation_options):
     """Rasterize GeoJSON into a new or existing raster.
 
-    If the output raster exists, rio-rasterize will rasterize feature values
-    into all bands of that raster.  The GeoJSON is assumed to be in the same
-    coordinate reference system as the output unless --src-crs is provided.
-
-    --default_value or property values when using --property must be using a
-    data type valid for the data type of that raster.
-
-
-    If a template raster is provided using the --like option, the affine
-    transform and data type from that raster will be used to create the output.
-    Only a single band will be output.
-
-    The GeoJSON is assumed to be in the same coordinate reference system unless
+    If the output raster exists, rio-rasterize will rasterize feature
+    values into all bands of that raster.  The GeoJSON is assumed to be
+    in the same coordinate reference system as the output unless
     --src-crs is provided.
 
-    --default_value or property values when using --property must be using a
-    data type valid for the data type of that raster.
+    --default_value or property values when using --property must be
+    using a data type valid for the data type of that raster.
 
-    --driver, --bounds, --dimensions, and --res are ignored when output exists
-    or --like raster is provided
+    If a template raster is provided using the --like option, the affine
+    transform and data type from that raster will be used to create the
+    output.  Only a single band will be output.
 
+    The GeoJSON is assumed to be in the same coordinate reference system
+    unless --src-crs is provided.
 
-    If the output does not exist and --like raster is not provided, the input
-    GeoJSON will be used to determine the bounds of the output unless
-    provided using --bounds.
+    --default_value or property values when using --property must be
+    using a data type valid for the data type of that raster.
+
+    --driver, --bounds, --dimensions, --res, --nodata are ignored when
+    output exists or --like raster is provided
+
+    If the output does not exist and --like raster is not provided, the
+    input GeoJSON will be used to determine the bounds of the output
+    unless provided using --bounds.
 
     --dimensions or --res are required in this case.
 
     If --res is provided, the bottom and right coordinates of bounds are
     ignored.
 
+    Note
+    ----
 
-    Note:
-    The GeoJSON is not projected to match the coordinate reference system
-    of the output or --like rasters at this time.  This functionality may be
-    added in the future.
+    The GeoJSON is not projected to match the coordinate reference
+    system of the output or --like rasters at this time.  This
+    functionality may be added in the future.
+
     """
+
     from rasterio.crs import CRS
     from rasterio.features import rasterize
     from rasterio.features import bounds as calculate_bounds
 
     output, files = resolve_inout(
-        files=files, output=output, force_overwrite=force_overwrite)
+        files=files, output=output, overwrite=overwrite)
 
     bad_param = click.BadParameter('invalid CRS.  Must be an EPSG code.',
                                    ctx, param=src_crs, param_hint='--src_crs')
@@ -167,7 +172,7 @@ def rasterize(
                                "reference systems?",
                                err=True)
 
-                meta = out.meta.copy()
+                meta = out.meta
 
                 result = rasterize(
                     geometries,
@@ -183,7 +188,8 @@ def rasterize(
                     # Burn in any non-fill pixels, and update mask accordingly
                     ne = result != fill
                     data[ne] = result[ne]
-                    data.mask[ne] = False
+                    if data.mask.any():
+                        data.mask[ne] = False
                     out.write(data, indexes=bidx)
 
         else:
@@ -201,7 +207,7 @@ def rasterize(
                                "systems?",
                                err=True)
 
-                kwargs = template_ds.meta.copy()
+                kwargs = template_ds.profile
                 kwargs['count'] = 1
                 kwargs['transform'] = template_ds.transform
 
@@ -248,7 +254,11 @@ def rasterize(
                                         bounds[3]),
                     'driver': driver
                 }
-                kwargs.update(**creation_options)
+
+            kwargs.update(**creation_options)
+
+            if nodata is not None:
+                kwargs['nodata'] = nodata
 
             result = rasterize(
                 geometries,
@@ -261,8 +271,6 @@ def rasterize(
 
             if 'dtype' not in kwargs:
                 kwargs['dtype'] = result.dtype
-
-            kwargs['nodata'] = fill
 
             with rasterio.open(output, 'w', **kwargs) as out:
                 out.write(result, indexes=1)

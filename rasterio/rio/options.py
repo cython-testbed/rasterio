@@ -43,10 +43,7 @@ Registry of common rio CLI options.  See cligj for more options.
 --vfs: virtual file system.
 """
 
-
-# TODO: move file_in_arg and file_out_arg to cligj
-
-
+import logging
 import os
 import re
 
@@ -54,7 +51,10 @@ import click
 
 import rasterio
 import rasterio.shutil
-from rasterio.vfs import FILE_SCHEMES, parse_path
+from rasterio.path import parse_path, ParsedPath, UnparsedPath
+
+
+logger = logging.getLogger(__name__)
 
 
 class IgnoreOptionMarker(object):
@@ -110,28 +110,40 @@ def abspath_forward_slashes(path):
 def file_in_handler(ctx, param, value):
     """Normalize ordinary filesystem and VFS paths"""
     try:
-        path, archive, scheme = parse_path(value)
+        path = parse_path(value)
+        if isinstance(path, UnparsedPath):
+            return path.name
 
-        # Validate existence of files.
-        if scheme in FILE_SCHEMES and not \
-                rasterio.shutil.exists(value):
-            raise IOError(
-                "Input file {0} does not exist".format(value))
+        elif path.scheme and path.is_remote:
+            return path.name
 
-        if archive and scheme:
-            archive = abspath_forward_slashes(archive)
-            path = "{0}://{1}!{2}".format(scheme, archive, path)
-        elif scheme and scheme.startswith('http'):
-            path = "{0}://{1}".format(scheme, path)
-        elif scheme == 's3':
-            path = "{0}://{1}".format(scheme, path)
-        elif scheme in FILE_SCHEMES:
-            path = abspath_forward_slashes(path)
+        elif path.archive:
+            if os.path.exists(path.archive) and rasterio.shutil.exists(value):
+                archive = abspath_forward_slashes(path.archive)
+                return "{}://{}!{}".format(path.scheme, archive, path.path)
+            else:
+                raise IOError(
+                    "Input archive {} does not exist".format(path.archive))
+
         else:
-            path = path
-        return path
+            if os.path.exists(path.path) and rasterio.shutil.exists(value):
+                return abspath_forward_slashes(path.path)
+            else:
+                raise IOError(
+                    "Input file {} does not exist".format(path.path))
+
     except Exception:
         raise click.BadParameter("{} is not a valid input file".format(value))
+
+
+def files_in_handler(ctx, param, value):
+    """Process and validate input file names"""
+    return tuple(file_in_handler(ctx, param, item) for item in value)
+
+
+def files_inout_handler(ctx, param, value):
+    """Process and validate input file names"""
+    return tuple(file_in_handler(ctx, param, item) for item in value[:-1]) + tuple(value[-1:])
 
 
 def from_like_context(ctx, param, value):
@@ -170,7 +182,7 @@ def nodata_handler(ctx, param, value):
     else:
         try:
             return float(value)
-        except:
+        except (TypeError, ValueError):
             raise click.BadParameter(
                 "{!r} is not a number".format(value),
                 param=param, param_hint='nodata')
@@ -198,7 +210,7 @@ def bounds_handler(ctx, param, value):
             retval = tuple(float(x) for x in re.split(r'[,\s]+', value))
             assert len(retval) == 4
             return retval
-        except:
+        except Exception:
             raise click.BadParameter(
                 "{0!r} is not a valid bounding box representation".format(
                     value))
@@ -213,6 +225,24 @@ file_in_arg = click.argument('INPUT', callback=file_in_handler)
 file_out_arg = click.argument(
     'OUTPUT',
     type=click.Path(resolve_path=True))
+
+# Multiple input files.
+files_in_arg = click.argument(
+    'files',
+    nargs=-1,
+    type=click.Path(),
+    required=True,
+    metavar="INPUTS...",
+    callback=files_in_handler)
+
+# Multiple files, last of which is an output file.
+files_inout_arg = click.argument(
+    'files',
+    nargs=-1,
+    type=click.Path(),
+    required=True,
+    metavar="INPUTS... OUTPUT",
+    callback=files_inout_handler)
 
 bidx_opt = click.option(
     '-b', '--bidx',
@@ -294,8 +324,8 @@ rgb_opt = click.option(
     default=False,
     help="Set RGB photometric interpretation.")
 
-force_overwrite_opt = click.option(
-    '--force-overwrite', 'force_overwrite',
+overwrite_opt = click.option(
+    '--overwrite', 'overwrite',
     is_flag=True, type=bool, default=False,
     help="Always overwrite an existing output file.")
 
@@ -322,3 +352,11 @@ all_touched_opt = click.option(
     help='Use all pixels touched by features, otherwise (default) use only '
          'pixels whose center is within the polygon or that are selected by '
          'Bresenhams line algorithm')
+
+# Feature collection or feature sequence switch.
+sequence_opt = click.option(
+    '--sequence/--collection',
+    default=True,
+    help="Write a LF-delimited sequence of texts containing individual "
+         "objects (the default) or write a single JSON text containing a "
+         "feature collection object.")

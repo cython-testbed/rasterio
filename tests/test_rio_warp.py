@@ -26,7 +26,7 @@ def test_dst_crs_error(runner, tmpdir):
     result = runner.invoke(main_group, [
         'warp', srcname, outputname, '--dst-crs', '{foo: bar}'])
     assert result.exit_code == 2
-    assert 'for dst_crs: crs appears to be JSON but is not' in result.output
+    assert 'for dst_crs: CRS appears to be JSON but is not' in result.output
 
 
 def test_dst_crs_error_2(runner, tmpdir):
@@ -212,6 +212,28 @@ def test_warp_no_reproject_bounds_res(runner, tmpdir):
             assert np.allclose(output.bounds, out_bounds)
 
 
+def test_warp_no_reproject_src_bounds_dimensions(runner, tmpdir):
+    """--src-bounds option works with dimensions"""
+    srcname = 'tests/data/shade.tif'
+    outputname = str(tmpdir.join('test.tif'))
+    out_bounds = [-11850000, 4810000, -11849000, 4812000]
+    result = runner.invoke(
+        main_group, [
+            'warp', srcname, outputname, '--dimensions', 9, 14,
+            '--src-bounds'] + out_bounds)
+    assert result.exit_code == 0
+    assert os.path.exists(outputname)
+
+    with rasterio.open(srcname) as src:
+        with rasterio.open(outputname) as output:
+            assert output.crs == src.crs
+            assert np.allclose(output.bounds, out_bounds)
+            assert np.allclose([111.111111, 142.857142],
+                               [output.transform.a, -output.transform.e])
+            assert output.width == 9
+            assert output.height == 14
+
+
 def test_warp_reproject_dst_crs(runner, tmpdir):
     srcname = 'tests/data/RGB.byte.tif'
     outputname = str(tmpdir.join('test.tif'))
@@ -346,6 +368,26 @@ def test_warp_reproject_src_bounds_res(runner, tmpdir):
                            [output.transform.a, -output.transform.e])
         assert output.width == 9
         assert output.height == 14
+
+
+def test_warp_reproject_src_bounds_dimensions(runner, tmpdir):
+    """--src-bounds option works with dimensions"""
+    srcname = 'tests/data/shade.tif'
+    outputname = str(tmpdir.join('test.tif'))
+    out_bounds = [-11850000, 4810000, -11849000, 4812000]
+    result = runner.invoke(
+        main_group, [
+            'warp', srcname, outputname, '--dst-crs', 'EPSG:4326',
+            '--dimensions', 9, 14, '--src-bounds'] + out_bounds)
+    assert result.exit_code == 0
+    assert os.path.exists(outputname)
+
+    with rasterio.open(outputname) as output:
+        assert output.crs == {'init': 'epsg:4326'}
+        assert np.allclose(output.bounds[:],
+                           [-106.45036, 39.6138, -106.44136, 39.6278])
+        assert round(output.transform.a, 4) == 0.001
+        assert round(-output.transform.e, 4) == 0.001
 
 
 def test_warp_reproject_dst_bounds(runner, tmpdir):

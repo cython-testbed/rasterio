@@ -4,10 +4,9 @@
 from __future__ import absolute_import
 from __future__ import division
 
-from math import ceil
+from math import ceil, floor
 
 from affine import Affine
-from affine import identity
 import numpy as np
 
 import rasterio
@@ -17,7 +16,6 @@ from rasterio._warp import (
 from rasterio.enums import Resampling
 from rasterio.env import ensure_env, GDALVersion, require_gdal_version
 from rasterio.errors import GDALBehaviorChangeException
-from rasterio.transform import guard_transform
 
 
 # Gauss (7) is not supported for warp
@@ -156,13 +154,13 @@ def transform_bounds(
         for x in (left, right):
             in_xs.extend([x] * (densify_pts + 2))
             in_ys.extend(
-                bottom + np.arange(0, densify_pts + 2, dtype=np.float32) *
+                bottom + np.arange(0, densify_pts + 2, dtype=np.float64) *
                 ((top - bottom) * densify_factor)
             )
 
         for y in (bottom, top):
             in_xs.extend(
-                left + np.arange(1, densify_pts + 1, dtype=np.float32) *
+                left + np.arange(1, densify_pts + 1, dtype=np.float64) *
                 ((right - left) * densify_factor)
             )
             in_ys.extend([y] * densify_pts)
@@ -179,8 +177,9 @@ def transform_bounds(
 @require_gdal_version('2.0', param='resampling', values=GDAL2_RESAMPLING)
 def reproject(source, destination, src_transform=None, gcps=None,
               src_crs=None, src_nodata=None, dst_transform=None, dst_crs=None,
-              dst_nodata=None, resampling=Resampling.nearest,
-              init_dest_nodata=True, **kwargs):
+              dst_nodata=None, src_alpha=0, dst_alpha=0,
+              resampling=Resampling.nearest, num_threads=1,
+              init_dest_nodata=True, warp_mem_limit=0, **kwargs):
     """Reproject a source raster to a destination raster.
 
     If the source and destination are ndarrays, coordinate reference
@@ -230,6 +229,10 @@ def reproject(source, destination, src_transform=None, gcps=None,
         remain in all areas not covered by the reprojected source.
         Defaults to the nodata value of the destination image (if set),
         the value of src_nodata, or 0 (GDAL default).
+    src_alpha : int, optional
+        Index of a band to use as the alpha band when warping.
+    dst_alpha : int, optional
+        Index of a band to use as the alpha band when warping.
     resampling: int
         Resampling method to use.  One of the following:
             Resampling.nearest,
@@ -246,9 +249,17 @@ def reproject(source, destination, src_transform=None, gcps=None,
             Resampling.q3 (GDAL >= 2.2)
         An exception will be raised for a method not supported by the running
         version of GDAL.
+    num_threads : int, optional
+        The number of warp worker threads. Default: 1.
     init_dest_nodata: bool
         Flag to specify initialization of nodata in destination;
         prevents overwrite of previous warps. Defaults to True.
+    warp_mem_limit : int, optional
+        The warp operation memory limit in MB. Larger values allow the
+        warp operation to be carried out in fewer chunks. The amount of
+        memory required to warp a 3-band uint8 2000 row x 2000 col
+        raster to a destination of the same size is approximately
+        56 MB. The default (0) means 64 MB with GDAL 2.2.
     kwargs:  dict, optional
         Additional arguments passed to transformation function.
 
@@ -257,14 +268,16 @@ def reproject(source, destination, src_transform=None, gcps=None,
     out: None
         Output is written to destination.
     """
+
+    # Only one type of georeferencing is permitted.
     if src_transform and gcps:
         raise ValueError("src_transform and gcps parameters may not"
                          "be used together.")
 
-    # Resampling guard.
+    # Guard against invalid or unsupported resampling algorithms.
     try:
-        if resampling == 7:  # gauss resampling is not supported
-            raise ValueError
+        if resampling == 7:
+            raise ValueError("Gauss resampling is not supported")
 
         Resampling(resampling)
 
@@ -274,40 +287,62 @@ def reproject(source, destination, src_transform=None, gcps=None,
                 ['Resampling.{0}'.format(r.name) for r in
                  SUPPORTED_RESAMPLING])))
 
-    # If working with identity transform, assume it is crs-less data
-    # and that translating the matrix very slightly will avoid #674
-    eps = 1e-100
-    if src_transform:
-        src_transform = guard_transform(src_transform)
-        # if src_transform is like `identity` with positive or negative `e`,
-        # translate matrix very slightly to avoid #674 and #1272.
-        if src_transform.almost_equals(identity) or src_transform.almost_equals(Affine(1, 0, 0, 0, -1, 0)):
-            src_transform = src_transform.translation(eps, eps)
-    if dst_transform:
-        dst_transform = guard_transform(dst_transform)
-        if dst_transform.almost_equals(identity) or dst_transform.almost_equals(Affine(1, 0, 0, 0, -1, 0)):
-            dst_transform = dst_transform.translation(eps, eps)
+    # Call the function in our extension module.
+    _reproject(
+        source, destination, src_transform=src_transform, gcps=gcps,
+        src_crs=src_crs, src_nodata=src_nodata, dst_transform=dst_transform,
+        dst_crs=dst_crs, dst_nodata=dst_nodata, dst_alpha=dst_alpha,
+        src_alpha=src_alpha, resampling=resampling,
+        init_dest_nodata=init_dest_nodata, num_threads=num_threads,
+        warp_mem_limit=warp_mem_limit, **kwargs)
 
-    if src_transform:
-        src_transform = guard_transform(src_transform).to_gdal()
-    if dst_transform:
-        dst_transform = guard_transform(dst_transform).to_gdal()
 
-    # Passing None can cause segfault, use empty dict
-    if src_crs is None:
-        src_crs = {}
-    if dst_crs is None:
-        dst_crs = {}
+def aligned_target(transform, width, height, resolution):
+    """Aligns target to specified resolution
 
-    _reproject(source, destination, src_transform, gcps, src_crs, src_nodata,
-               dst_transform, dst_crs, dst_nodata, resampling,
-               init_dest_nodata, **kwargs)
+    Parameters
+    ----------
+    transform : Affine
+        Input affine transformation matrix
+    width, height: int
+        Input dimensions
+    resolution: tuple (x resolution, y resolution) or float
+        Target resolution, in units of target coordinate reference
+        system.
+
+    Returns
+    -------
+    transform: Affine
+        Output affine transformation matrix
+    width, height: int
+        Output dimensions
+
+    """
+    if isinstance(resolution, (float, int)):
+        res = (float(resolution), float(resolution))
+    else:
+        res = resolution
+
+    xmin = transform.xoff
+    ymin = transform.yoff + height * transform.e
+    xmax = transform.xoff + width * transform.a
+    ymax = transform.yoff
+
+    xmin = floor(xmin / res[0]) * res[0]
+    xmax = ceil(xmax / res[0]) * res[0]
+    ymin = floor(ymin / res[1]) * res[1]
+    ymax = ceil(ymax / res[1]) * res[1]
+    dst_transform = Affine(res[0], 0, xmin, 0, -res[1], ymax)
+    dst_width = max(int(ceil((xmax - xmin) / res[0])), 1)
+    dst_height = max(int(ceil((ymax - ymin) / res[1])), 1)
+
+    return dst_transform, dst_width, dst_height
 
 
 @ensure_env
-def calculate_default_transform(src_crs, dst_crs, width, height,
-                                left=None, bottom=None, right=None, top=None,
-                                gcps=None, resolution=None):
+def calculate_default_transform(
+        src_crs, dst_crs, width, height, left=None, bottom=None, right=None,
+        top=None, gcps=None, resolution=None, dst_width=None, dst_height=None):
     """Output dimensions and transform for a reprojection.
 
     Source and destination coordinate reference systems and output
@@ -339,6 +374,9 @@ def calculate_default_transform(src_crs, dst_crs, width, height,
     resolution: tuple (x resolution, y resolution) or float, optional
         Target resolution, in units of target coordinate reference
         system.
+    dst_width, dst_height: int, optional
+        Output file size in pixels and lines. Cannot be used together
+        with resolution.
 
     Returns
     -------
@@ -363,6 +401,18 @@ def calculate_default_transform(src_crs, dst_crs, width, height,
     if any(x is None for x in (left, bottom, right, top)) and not gcps:
         raise ValueError("Either four bounding values or ground control points"
                          "must be specified")
+    
+    if (dst_width is None) != (dst_height is None):
+        raise ValueError("Either dst_width and dst_height must be specified "
+                         "or none of them.")
+
+    if all(x is not None for x in (dst_width, dst_height)):
+        dimensions = (dst_width, dst_height)
+    else:
+        dimensions = None
+
+    if resolution and dimensions:
+        raise ValueError("Resolution cannot be used with dst_width and dst_height.")
 
     dst_affine, dst_width, dst_height = _calculate_default_transform(
         src_crs, dst_crs, width, height, left, bottom, right, top, gcps)
@@ -391,5 +441,15 @@ def calculate_default_transform(src_crs, dst_crs, width, height,
 
         dst_width = ceil(dst_width * xratio)
         dst_height = ceil(dst_height * yratio)
+    
+    if dimensions:
+        xratio = dst_width / dimensions[0]
+        yratio = dst_height / dimensions[1]
+
+        dst_width = dimensions[0]
+        dst_height = dimensions[1]
+        
+        dst_affine = Affine(dst_affine.a * xratio, dst_affine.b, dst_affine.c,
+                            dst_affine.d, dst_affine.e * yratio, dst_affine.f)
 
     return dst_affine, dst_width, dst_height

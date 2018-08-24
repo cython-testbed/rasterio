@@ -158,6 +158,20 @@ Please install Rasterio in a `virtual environment
 <https://www.python.org/dev/peps/pep-0405/>`__ so that its requirements don't
 tamper with your system's Python.
 
+SSL certs
+---------
+
+The Linux wheels on PyPI are built on CentOS and libcurl expects certs to be in
+/etc/pki/tls/certs/ca-bundle.crt. Ubuntu's certs, for example, are in
+a different location. You may need to use the CURL_CA_BUNDLE environment
+variable to specify the location of SSL certs on your computer. On an Ubuntu
+system set the variable as shown below.
+
+.. code-block:: console
+
+    $ export CURL_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt
+
+
 Dependencies
 ------------
 
@@ -286,32 +300,50 @@ versions used `here
 Note: The GDAL dll (gdal111.dll) and gdal-data directory need to be in your
 Windows PATH otherwise rasterio will fail to work.
 
+
+Support
+=======
+
+The primary forum for questions about installation and usage of Rasterio is
+https://rasterio.groups.io/g/main. The authors and other users will answer
+questions when they have expertise to share and time to explain. Please take
+the time to craft a clear question and be patient about responses.
+
+Please do not bring these questions to Rasterio's issue tracker, which we want
+to reserve for bug reports and other actionable issues.
+
+While Rasterio's repo is in the Mapbox GitHub organization, Mapbox's Support
+team is focused on customer support for its commercial platform and Rasterio
+support requests may be perfunctorily closed with or without a link to
+https://rasterio.groups.io/g/main. It's better to bring questions directly to
+the main Rasterio group at groups.io.
+
 Development and Testing
------------------------
+=======================
 
 See `CONTRIBUTING.rst <CONTRIBUTING.rst/>`__.
 
 Documentation
--------------
+=============
 
 See `docs/ <docs/>`__.
 
 License
--------
+=======
 
 See `LICENSE.txt <LICENSE.txt>`__.
 
 Authors
--------
+=======
 
 See `AUTHORS.txt <AUTHORS.txt>`__.
 
 Changes
--------
+=======
 
 See `CHANGES.txt <CHANGES.txt>`__.
 
 Who is Using Rasterio?
-----------------------
+======================
 
 See `here <https://libraries.io/pypi/rasterio/usage>`__.

@@ -13,7 +13,7 @@ from rasterio.rio import options
 from rasterio.features import dataset_features
 from rasterio.rio.helpers import write_features
 
-logger = logging.getLogger('rio')
+logger = logging.getLogger(__name__)
 
 
 # Common options used below
@@ -23,7 +23,8 @@ files_inout_arg = click.argument(
     'files',
     nargs=-1,
     type=click.Path(resolve_path=True),
-    metavar="INPUTS... OUTPUT")
+    metavar="INPUTS... OUTPUT",
+    callback=options.files_inout_handler)
 
 all_touched_opt = click.option(
     '-a', '--all', '--all_touched', 'all_touched',
@@ -42,7 +43,7 @@ all_touched_opt = click.option(
 @cligj.compact_opt
 @cligj.projection_geographic_opt
 @cligj.projection_projected_opt
-@cligj.sequence_opt
+@options.sequence_opt
 @cligj.use_rs_opt
 @cligj.geojson_type_feature_opt(True)
 @cligj.geojson_type_bbox_opt(False)
@@ -91,7 +92,6 @@ def shapes(
       $ rio shapes --as-mask --bidx 1 tests/data/RGB.byte.tif
     """
     # These import numpy, which we don't want to do unless it's needed.
-    logger = logging.getLogger('rio')
     dump_kwds = {'sort_keys': True}
     if indent:
         dump_kwds['indent'] = indent

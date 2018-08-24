@@ -9,8 +9,8 @@ import pytest
 
 import rasterio
 from rasterio._env import del_gdal_config, get_gdal_config, set_gdal_config
-from rasterio.env import defenv, delenv, getenv, setenv, ensure_env
-from rasterio.env import default_options, GDALVersion, require_gdal_version
+from rasterio.env import Env, defenv, delenv, getenv, setenv, ensure_env, ensure_env_credentialled
+from rasterio.env import GDALVersion, require_gdal_version
 from rasterio.errors import EnvError, RasterioIOError, GDALVersionError
 from rasterio.rio.main import main_group
 
@@ -81,10 +81,12 @@ def test_env_accessors(gdalenv):
     """High level GDAL env access."""
     defenv()
     setenv(foo='1', bar='2')
-    expected = default_options.copy()
-    expected.update({'foo': '1', 'bar': '2'})
-    assert getenv() == rasterio.env.local._env.options
-    assert getenv() == expected
+    expected = {'foo': '1', 'bar': '2'}
+    items = getenv()
+    assert items == rasterio.env.local._env.options
+    # Comparison below requires removal of GDAL_DATA.
+    items.pop('GDAL_DATA', None)
+    assert items == expected
     assert get_gdal_config('foo') == 1
     assert get_gdal_config('bar') == 2
     delenv()
@@ -111,6 +113,24 @@ def test_ensure_env_decorator(gdalenv):
     assert f() is True
 
 
+def test_ensure_env_credentialled_decorator(monkeypatch, gdalenv):
+    """Credentialization is ensured by wrapper"""
+    monkeypatch.setenv('AWS_ACCESS_KEY_ID', 'id')
+    monkeypatch.setenv('AWS_SECRET_ACCESS_KEY', 'key')
+    monkeypatch.setenv('AWS_SESSION_TOKEN', 'token')
+
+    @ensure_env_credentialled
+    def f(path):
+        return getenv()
+
+    config = f('s3://foo/bar')
+    assert config['AWS_ACCESS_KEY_ID'] == 'id'
+    assert config['AWS_SECRET_ACCESS_KEY'] == 'key'
+    assert config['AWS_SESSION_TOKEN'] == 'token'
+
+    monkeypatch.undo()
+
+
 def test_no_aws_gdal_config(gdalenv):
     """Trying to set AWS-specific GDAL config options fails."""
     with pytest.raises(EnvError):
@@ -119,9 +139,20 @@ def test_no_aws_gdal_config(gdalenv):
         rasterio.Env(AWS_SECRET_ACCESS_KEY='y')
 
 
+def test_env_empty(gdalenv):
+    """Empty env has no defaults"""
+    env = rasterio.Env(foo='x')
+    assert env.options['foo'] == 'x'
+    assert not env.context_options
+    with env:
+        assert get_gdal_config('CHECK_WITH_INVERT_PROJ') is None
+        assert get_gdal_config('GTIFF_IMPLICIT_JPEG_OVR') is None
+        assert get_gdal_config("RASTERIO_ENV") is None
+
+
 def test_env_defaults(gdalenv):
     """Test env defaults."""
-    env = rasterio.Env(foo='x')
+    env = rasterio.Env.from_defaults(foo='x')
     assert env.options['foo'] == 'x'
     assert not env.context_options
     with env:
@@ -160,12 +191,14 @@ def test_with_aws_session_credentials(gdalenv):
     env = rasterio.Env(
         aws_access_key_id='id', aws_secret_access_key='key',
         aws_session_token='token', region_name='null-island-1')
-    expected = default_options.copy()
     with env:
-        expected.update({
+        expected = {
             'AWS_ACCESS_KEY_ID': 'id', 'AWS_REGION': 'null-island-1',
-            'AWS_SECRET_ACCESS_KEY': 'key', 'AWS_SESSION_TOKEN': 'token'})
-        assert getenv() == expected
+            'AWS_SECRET_ACCESS_KEY': 'key', 'AWS_SESSION_TOKEN': 'token'}
+        items = getenv()
+        # Comparison below requires removal of GDAL_DATA.
+        items.pop('GDAL_DATA', None)
+        assert items == expected
 
 
 def test_session_env_lazy(monkeypatch, gdalenv):
@@ -184,6 +217,27 @@ def test_session_env_lazy(monkeypatch, gdalenv):
             assert getenv()[k] == v
 
     monkeypatch.undo()
+
+
+def test_aws_unsigned(gdalenv):
+    """Create an Env with no AWS signing."""
+    with rasterio.env.Env(aws_unsigned=True) as s:
+        s.credentialize()
+        assert getenv()['AWS_NO_SIGN_REQUEST'] == 'YES'
+        assert getenv().get('AWS_ACCESS_KEY_ID') is None
+
+
+@pytest.mark.xfail(
+    reason="Turning off signing in an inner env does not work in Rasterio 1.0")
+def test_aws_unsigned_subenv(gdalenv):
+    """Create an Env with no AWS signing."""
+    with rasterio.Env(
+            aws_access_key_id='id', aws_secret_access_key='key',
+            aws_session_token='token', region_name='null-island-1'):
+        with rasterio.env.Env(aws_unsigned=True) as inner:
+            inner.credentialize()
+            assert getenv()['AWS_NO_SIGN_REQUEST'] == 'YES'
+            assert getenv().get('AWS_ACCESS_KEY_ID') is None
 
 
 def test_open_with_default_env(gdalenv):
@@ -317,7 +371,7 @@ def test_ensure_defaults_teardown(gdalenv):
     """
 
     def _check_defaults():
-        for key in default_options.keys():
+        for key in Env.default_options().keys():
             assert get_gdal_config(key) is None
 
     _check_defaults()
@@ -471,6 +525,7 @@ def test_require_gdal_version():
 def test_require_gdal_version_too_low():
     """Functions that are too low raise a GDALVersionError"""
     version = '10000000.0'
+
     @require_gdal_version(version)
     def b():
         return 2
@@ -501,6 +556,7 @@ def test_require_gdal_version_is_max_version():
 
 def test_require_gdal_version_reason():
     reason = 'This totally awesome new feature is was introduced in GDAL 10000'
+
     @require_gdal_version('10000.0', reason=reason)
     def b():
         return 2
@@ -527,7 +583,7 @@ def test_require_gdal_version_param():
     def a(foo=None):
         return foo
 
-    assert a() == None
+    assert a() is None
     assert a('bar') == 'bar'
 
 
@@ -535,13 +591,14 @@ def test_require_gdal_version_param_version_too_low():
     """Parameter is not allowed since runtime is too low a version"""
 
     version = '10000000.0'
+
     @require_gdal_version(version, param='foo')
     def a(foo=None):
         return foo
 
-    assert a() == None  # param is not used, OK
-    assert a(None) == None  # param is default, OK
-    assert a(foo=None) == None  # param is keyword with default, OK
+    assert a() is None  # param is not used, OK
+    assert a(None) is None  # param is default, OK
+    assert a(foo=None) is None  # param is keyword with default, OK
 
     with pytest.raises(GDALVersionError):
         a("not None")  # parameter passed as a position argument and not default
@@ -557,13 +614,14 @@ def test_require_gdal_version_param_version_too_high():
     """Parameter is not allowed since runtime is too low a version"""
 
     version = '1.0'
+
     @require_gdal_version(version, param='foo', is_max_version=True)
     def a(foo=None):
         return foo
 
-    assert a() == None  # param is not used, OK
-    assert a(None) == None  # param is default, OK
-    assert a(foo=None) == None  # param is keyword with default, OK
+    assert a() is None  # param is not used, OK
+    assert a(None) is None  # param is default, OK
+    assert a(foo=None) is None  # param is keyword with default, OK
 
     with pytest.raises(GDALVersionError):
         a("not None")
@@ -583,7 +641,7 @@ def test_require_gdal_version_param_values():
         def a(foo=None):
             return foo
 
-        assert a() == None
+        assert a() is None
         assert a('bar') == 'bar'
         assert a(foo='bar') == 'bar'
 
@@ -595,18 +653,19 @@ def test_require_gdal_version_param_values_err():
     for invalid_values in ['bar', 1, 1.5, {'a': 'b'}]:
         with pytest.raises(ValueError):
             @require_gdal_version('1.0', param='foo', values=invalid_values)
-            def a(foo=None):
+            def func_a(foo=None):
                 return foo
 
         with pytest.raises(ValueError):
             @require_gdal_version('1.0', values=invalid_values)
-            def a(foo=None):
+            def func_b(foo=None):
                 return foo
 
 
 def test_require_gdal_version_param_values_version_too_low():
     """Parameter values not allowed since runtime is too low a version"""
     version = '10000000.0'
+
     @require_gdal_version(version, param='foo', values=['bar'])
     def a(foo=None):
         return foo
@@ -624,6 +683,7 @@ def test_require_gdal_version_param_values_version_too_low():
 def test_require_gdal_version_param_values_version_too_high():
     """Parameter values not allowed since runtime is too low a version"""
     version = '1.0'
+
     @require_gdal_version(version, param='foo', values=['bar'],
                           is_max_version=True)
     def a(foo=None):
@@ -643,6 +703,7 @@ def test_require_gdal_version_param_values_version_too_high():
 
 def test_require_gdal_version_chaining():
     version = '10000000.0'
+
     @require_gdal_version(version, param='foo', values=['bar'])
     @require_gdal_version(version, param='something', values=['else'])
     def a(foo=None, something=None):

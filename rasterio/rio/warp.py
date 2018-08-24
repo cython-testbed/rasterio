@@ -1,11 +1,11 @@
 """$ rio warp"""
 
 import logging
-from math import ceil, floor, log
+from math import ceil, log
 import warnings
 
 import click
-from cligj import files_inout_arg, format_opt
+from cligj import format_opt
 
 import rasterio
 from rasterio.crs import CRS
@@ -16,7 +16,7 @@ from rasterio.rio.helpers import resolve_inout
 from rasterio.transform import Affine
 from rasterio.warp import (
     reproject, Resampling, SUPPORTED_RESAMPLING, transform_bounds,
-    calculate_default_transform as calcdt)
+    aligned_target, calculate_default_transform as calcdt)
 
 
 # Improper usage of rio-warp can lead to accidental creation of
@@ -27,7 +27,7 @@ MAX_OUTPUT_HEIGHT = 100000
 
 
 @click.command(short_help='Warp a raster dataset.')
-@files_inout_arg
+@options.files_inout_arg
 @options.output_opt
 @format_opt
 @click.option(
@@ -61,12 +61,12 @@ MAX_OUTPUT_HEIGHT = 100000
               help='Constrain output to valid coordinate region in dst-crs')
 @click.option('--target-aligned-pixels/--no-target-aligned-pixels', default=False,
               help='align the output bounds based on the resolution')
-@options.force_overwrite_opt
+@options.overwrite_opt
 @options.creation_options
 @click.pass_context
 def warp(ctx, files, output, driver, like, dst_crs, dimensions, src_bounds,
          dst_bounds, res, resampling, src_nodata, dst_nodata, threads,
-         check_invert_proj, force_overwrite, creation_options,
+         check_invert_proj, overwrite, creation_options,
          target_aligned_pixels):
     """
     Warp a raster dataset.
@@ -111,7 +111,7 @@ def warp(ctx, files, output, driver, like, dst_crs, dimensions, src_bounds,
 
     """
     output, files = resolve_inout(
-        files=files, output=output, force_overwrite=force_overwrite)
+        files=files, output=output, overwrite=overwrite)
 
     resampling = Resampling[resampling]  # get integer code for method
 
@@ -177,9 +177,10 @@ def warp(ctx, files, output, driver, like, dst_crs, dimensions, src_bounds,
                     # Calculate resolution appropriate for dimensions
                     # in target.
                     dst_width, dst_height = dimensions
+                    bounds = src_bounds or src.bounds
                     try:
                         xmin, ymin, xmax, ymax = transform_bounds(
-                            src.crs, dst_crs, *src.bounds)
+                            src.crs, dst_crs, *bounds)
                     except CRSError as err:
                         raise click.BadParameter(
                             str(err), param='dst_crs', param_hint='dst_crs')
@@ -211,23 +212,6 @@ def warp(ctx, files, output, driver, like, dst_crs, dimensions, src_bounds,
                     dst_width = max(int(ceil((xmax - xmin) / res[0])), 1)
                     dst_height = max(int(ceil((ymax - ymin) / res[1])), 1)
 
-                elif target_aligned_pixels:
-                    try:
-                        xmin, ymin, xmax, ymax = transform_bounds(
-                            src.crs, dst_crs, *src.bounds)
-                    except CRSError as err:
-                        raise click.BadParameter(
-                            str(err), param='dst_crs', param_hint='dst_crs')
-
-                    xmin = floor(xmin / res[0]) * res[0]
-                    xmax = ceil(xmax / res[0]) * res[0]
-                    ymin = floor(ymin / res[1]) * res[1]
-                    ymax = ceil(ymax / res[1]) * res[1]
-
-                    dst_transform = Affine(res[0], 0, xmin, 0, -res[1], ymax)
-                    dst_width = max(int(ceil((xmax - xmin) / res[0])), 1)
-                    dst_height = max(int(ceil((ymax - ymin) / res[1])), 1)
-
                 else:
                     try:
                         if src.transform.is_identity and src.gcps:
@@ -247,6 +231,7 @@ def warp(ctx, files, output, driver, like, dst_crs, dimensions, src_bounds,
                 # Same projection, different dimensions, calculate resolution.
                 dst_crs = src.crs
                 dst_width, dst_height = dimensions
+                l, b, r, t = src_bounds or (l, b, r, t)
                 dst_transform = Affine(
                     (r - l) / float(dst_width),
                     0, l, 0,
@@ -278,6 +263,9 @@ def warp(ctx, files, output, driver, like, dst_crs, dimensions, src_bounds,
                 dst_transform = src.transform
                 dst_width = src.width
                 dst_height = src.height
+
+            if target_aligned_pixels:
+                dst_transform, dst_width, dst_height = aligned_target(dst_transform, dst_width, dst_height, res)
 
             # If src_nodata is not None, update the dst metadata NODATA
             # value to src_nodata (will be overridden by dst_nodata if it is not None

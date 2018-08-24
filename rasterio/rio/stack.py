@@ -5,7 +5,7 @@ import collections
 import logging
 
 import click
-from cligj import files_inout_arg, format_opt
+from cligj import format_opt
 
 import rasterio
 from rasterio.compat import zip_longest
@@ -14,15 +14,15 @@ from rasterio.rio.helpers import resolve_inout
 
 
 @click.command(short_help="Stack a number of bands into a multiband dataset.")
-@files_inout_arg
+@options.files_inout_arg
 @options.output_opt
 @format_opt
 @options.bidx_magic_opt
 @options.rgb_opt
-@options.force_overwrite_opt
+@options.overwrite_opt
 @options.creation_options
 @click.pass_context
-def stack(ctx, files, output, driver, bidx, photometric, force_overwrite,
+def stack(ctx, files, output, driver, bidx, photometric, overwrite,
           creation_options):
     """Stack a number of bands from one or more input files into a
     multiband dataset.
@@ -55,11 +55,11 @@ def stack(ctx, files, output, driver, bidx, photometric, force_overwrite,
       rio stack RGB.byte.tif --bidx ..2 RGB.byte.tif --bidx 3.. -o stacked.tif
 
     """
-    logger = logging.getLogger('rio')
+    logger = logging.getLogger(__name__)
     try:
         with ctx.obj['env']:
             output, files = resolve_inout(files=files, output=output,
-                                          force_overwrite=force_overwrite)
+                                          overwrite=overwrite)
             output_count = 0
             indexes = []
             for path, item in zip_longest(files, bidx, fillvalue=None):

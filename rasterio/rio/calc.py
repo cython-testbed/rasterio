@@ -4,7 +4,6 @@ from collections import OrderedDict
 from distutils.version import LooseVersion
 
 import click
-from cligj import files_inout_arg
 import snuggs
 
 import rasterio
@@ -32,7 +31,7 @@ def read_array(ix, subix=None, dtype=None):
 
 @click.command(short_help="Raster data calculator.")
 @click.argument('command')
-@files_inout_arg
+@options.files_inout_arg
 @options.output_opt
 @click.option('--name', multiple=True,
               help='Specify an input file with a unique short (alphas only) '
@@ -40,10 +39,10 @@ def read_array(ix, subix=None, dtype=None):
                    '"a=tests/data/RGB.byte.tif".')
 @options.dtype_opt
 @options.masked_opt
-@options.force_overwrite_opt
+@options.overwrite_opt
 @options.creation_options
 @click.pass_context
-def calc(ctx, command, files, output, name, dtype, masked, force_overwrite,
+def calc(ctx, command, files, output, name, dtype, masked, overwrite,
          creation_options):
     """A raster data calculator
 
@@ -89,7 +88,7 @@ def calc(ctx, command, files, output, name, dtype, masked, force_overwrite,
     try:
         with ctx.obj['env']:
             output, files = resolve_inout(files=files, output=output,
-                                          force_overwrite=force_overwrite)
+                                          overwrite=overwrite)
 
             inputs = ([tuple(n.split('=')) for n in name] +
                       [(None, n) for n in files])

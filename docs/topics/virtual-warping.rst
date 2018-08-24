@@ -20,7 +20,7 @@ extract pixels corresponding to its central zoom 9 tile, do the following.
   from rasterio.vrt import WarpedVRT
 
   with rasterio.open('tests/data/RGB.byte.tif') as src:
-      with WarpedVRT(src, dst_crs='EPSG:3857',
+      with WarpedVRT(src, crs='EPSG:3857',
                      resampling=Resampling.bilinear) as vrt:
 
           # Determine the destination tile and its mercator bounds using
@@ -56,7 +56,7 @@ extract pixels corresponding to its central zoom 9 tile, do the following.
 
 
 Normalizing Data to a Consistent Grid
-=====================================
+-------------------------------------
 
 A ``WarpedVRT`` can be used to normalize a stack of images with differing
 projections, bounds, cell sizes, or dimensions against a regular grid
@@ -139,10 +139,10 @@ CRS, and cell size within a pre-defined bounding box:
 
     vrt_options = {
         'resampling': Resampling.cubic,
-        'dst_crs': dst_crs,
-        'dst_transform': dst_transform,
-        'dst_height': dst_height,
-        'dst_width': dst_width,
+        'crs': dst_crs,
+        'transform': dst_transform,
+        'height': dst_height,
+        'width': dst_width,
     }
 
     for path in input_files:

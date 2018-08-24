@@ -2,7 +2,7 @@
 
 
 import click
-from cligj import files_inout_arg, format_opt
+from cligj import format_opt
 
 import rasterio
 from rasterio.rio import options
@@ -10,20 +10,20 @@ from rasterio.rio.helpers import resolve_inout
 
 
 @click.command(short_help="Merge a stack of raster datasets.")
-@files_inout_arg
+@options.files_inout_arg
 @options.output_opt
 @format_opt
 @options.bounds_opt
 @options.resolution_opt
 @options.nodata_opt
 @options.bidx_mult_opt
-@options.force_overwrite_opt
+@options.overwrite_opt
 @click.option('--precision', type=int, default=7,
               help="Number of decimal places of precision in alignment of "
                    "pixels")
 @options.creation_options
 @click.pass_context
-def merge(ctx, files, output, driver, bounds, res, nodata, bidx, force_overwrite,
+def merge(ctx, files, output, driver, bounds, res, nodata, bidx, overwrite,
           precision, creation_options):
     """Copy valid pixels from input files to an output file.
 
@@ -47,7 +47,7 @@ def merge(ctx, files, output, driver, bounds, res, nodata, bidx, force_overwrite
     from rasterio.merge import merge as merge_tool
 
     output, files = resolve_inout(
-        files=files, output=output, force_overwrite=force_overwrite)
+        files=files, output=output, overwrite=overwrite)
 
     with ctx.obj['env']:
         datasets = [rasterio.open(f) for f in files]
@@ -61,6 +61,9 @@ def merge(ctx, files, output, driver, bounds, res, nodata, bidx, force_overwrite
         profile['width'] = dest.shape[2]
         profile['driver'] = driver
         profile['count'] = dest.shape[0]
+
+        if nodata is not None:
+            profile['nodata'] = nodata
 
         profile.update(**creation_options)
 

@@ -3,6 +3,8 @@ Tests in this file will ONLY run for GDAL >= 2.x"""
 
 from io import BytesIO
 import logging
+import os.path
+
 import pytest
 
 import rasterio
@@ -112,17 +114,6 @@ def test_non_initial_bytes_in_two(rgb_file_bytes):
             assert src.read().shape == (3, 718, 791)
 
 
-def test_non_initial_bytearray(rgb_file_bytes):
-    """MemoryFile contents can be read from bytearray and opened."""
-    with MemoryFile() as memfile:
-        assert memfile.write(bytearray(rgb_file_bytes)) == len(rgb_file_bytes)
-        with memfile.open() as src:
-            assert src.driver == 'GTiff'
-            assert src.count == 3
-            assert src.dtypes == ('uint8', 'uint8', 'uint8')
-            assert src.read().shape == (3, 718, 791)
-
-
 def test_no_initial_bytes(rgb_data_and_profile):
     """An empty MemoryFile can be opened and written into."""
     data, profile = rgb_data_and_profile
@@ -134,7 +125,8 @@ def test_no_initial_bytes(rgb_data_and_profile):
         # Exact size of the in-memory GeoTIFF varies with GDAL
         # version and configuration.
         assert view.size > 1000000
-        data = bytearray(view)
+        # NB: bytes(view) doesn't return what you'd expect with python 2.7.
+        data = bytes(bytearray(view))
 
     with MemoryFile(data) as memfile:
         with memfile.open() as src:
@@ -226,3 +218,18 @@ def test_zip_file_object_read(path_zip_file):
                 assert src.count == 3
                 assert src.dtypes == ('uint8', 'uint8', 'uint8')
                 assert src.read().shape == (3, 768, 1024)
+
+
+@pytest.mark.xfail(reason="Unknown bug in MemoryFile implementation")
+def test_vrt_memfile():
+    """Successfully read an in-memory VRT"""
+    with open('tests/data/white-gemini-iv.vrt') as vrtfile:
+        source = vrtfile.read()
+        source = source.replace('<SourceFilename relativeToVRT="1">389225main_sw_1965_1024.jpg</SourceFilename>', '<SourceFilename relativeToVRT="0">{}/389225main_sw_1965_1024.jpg</SourceFilename>'.format(os.path.abspath("tests/data")))
+
+    with MemoryFile(source.encode('utf-8'), ext='vrt') as memfile:
+        with memfile.open() as src:
+            assert src.driver == 'VRT'
+            assert src.count == 3
+            assert src.dtypes == ('uint8', 'uint8', 'uint8')
+            assert src.read().shape == (3, 768, 1024)

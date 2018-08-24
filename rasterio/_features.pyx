@@ -33,7 +33,7 @@ def _shapes(image, mask, connectivity, transform):
         Must evaluate to bool (rasterio.bool_ or rasterio.uint8)
     connectivity : int
         Use 4 or 8 pixel connectivity for grouping pixels into features
-    transform : Affine transformation
+    transform : Affine
         If not provided, feature coordinates will be generated based on pixel
         coordinates
 
@@ -268,7 +268,7 @@ def _rasterize(shapes, image, transform, all_touched, merge_alg):
         If false, only pixels whose center is within the polygon or
         that are selected by Bresenham's line algorithm will be burned
         in.
-    merge_alg : str, required
+    merge_alg : MergeAlg, required
         Merge algorithm to use.  One of:
             MergeAlg.replace (default): the new value will overwrite the
                 existing value.
@@ -310,7 +310,7 @@ def _rasterize(shapes, image, transform, all_touched, merge_alg):
             exc_wrap_int(
                 GDALRasterizeGeometries(
                     mem.handle(), 1, mem.band_ids,num_geoms, geoms, NULL,
-                    mem.transform, pixel_values, options, NULL, NULL))
+                    mem.gdal_transform, pixel_values, options, NULL, NULL))
 
             # Read in-memory data back into image
             image = mem.read()

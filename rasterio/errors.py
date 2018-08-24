@@ -86,3 +86,15 @@ class RasterioDeprecationWarning(UserWarning):
 
 class RasterBlockError(RasterioError):
     """Raised when raster block access fails"""
+
+
+class BandOverviewError(UserWarning):
+    """Raised when a band overview access fails."""
+
+
+class WarpOptionsError(RasterioError):
+    """Raised when options for a warp operation are invalid"""
+
+
+class UnsupportedOperation(RasterioError):
+    """Raised when reading from a file opened in 'w' mode"""

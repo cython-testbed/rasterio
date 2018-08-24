@@ -10,12 +10,12 @@ import rasterio
 import rasterio.shutil
 from rasterio.mask import mask as mask_tool
 
-logger = logging.getLogger('rio')
+logger = logging.getLogger(__name__)
 
 
 # Mask command
 @click.command(short_help='Mask in raster using features.')
-@cligj.files_inout_arg
+@options.files_inout_arg
 @options.output_opt
 @click.option('-j', '--geojson-mask', 'geojson_mask',
               type=click.Path(), default=None,
@@ -31,7 +31,7 @@ logger = logging.getLogger('rio')
               help='Inverts the mask, so that areas covered by features are'
                    'masked out and areas not covered are retained.  Ignored '
                    'if using --crop')
-@options.force_overwrite_opt
+@options.overwrite_opt
 @options.creation_options
 @click.pass_context
 def mask(
@@ -43,7 +43,7 @@ def mask(
         all_touched,
         crop,
         invert,
-        force_overwrite,
+        overwrite,
         creation_options):
     """Masks in raster using GeoJSON features (masks out all areas not covered
     by features), and optionally crops the output raster to the extent of the
@@ -68,7 +68,7 @@ def mask(
     """
 
     output, files = resolve_inout(
-        files=files, output=output, force_overwrite=force_overwrite)
+        files=files, output=output, overwrite=overwrite)
     input = files[0]
 
     if geojson_mask is None:
@@ -111,17 +111,17 @@ def mask(
                                                  'input raster',
                                                  param=crop,
                                                  param_hint='--crop')
-                else: # pragma: no cover
+                else:  # pragma: no cover
                     raise e
 
-            meta = src.meta.copy()
-            meta.update(**creation_options)
-            meta.update({
+            profile = src.profile
+            profile.update(**creation_options)
+            profile.update({
                 'driver': driver,
                 'height': out_image.shape[1],
                 'width': out_image.shape[2],
                 'transform': out_transform
             })
 
-            with rasterio.open(output, 'w', **meta) as out:
+            with rasterio.open(output, 'w', **profile) as out:
                 out.write(out_image)

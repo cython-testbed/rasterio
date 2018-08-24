@@ -149,7 +149,10 @@ def test_is_same_crs():
 
 
 def test_null_crs_equality():
-    assert (CRS() == CRS()) is False
+    assert CRS() == CRS()
+    a = CRS()
+    assert a == a
+    assert not a != a
 
 
 def test_null_and_valid_crs_equality():
@@ -209,9 +212,24 @@ def test_repr():
     assert repr(CRS({'init': 'EPSG:4326'})).startswith("CRS({'init'")
 
 
+def test_dunder_str():
+    assert str(CRS({'init': 'EPSG:4326'})) == CRS({'init': 'EPSG:4326'}).to_string()
+
+
 def test_epsg_code():
     assert CRS({'init': 'EPSG:4326'}).is_epsg_code
     assert not CRS({'proj': 'latlon'}).is_epsg_code
+
+
+def test_epsg():
+    assert CRS({'init': 'EPSG:4326'}).to_epsg() == 4326
+    assert CRS.from_string('+proj=longlat +datum=WGS84 +no_defs').to_epsg() == 4326
+
+
+def test_epsg__no_code_available():
+    lcc_crs = CRS.from_string('+lon_0=-95 +ellps=GRS80 +y_0=0 +no_defs=True +proj=lcc '
+                              '+x_0=0 +units=m +lat_2=77 +lat_1=49 +lat_0=0')
+    assert lcc_crs.to_epsg() is None
 
 
 def test_crs_OSR_equivalence():
@@ -252,3 +270,7 @@ def test_from_wkt():
 def test_from_wkt_invalid():
     with pytest.raises(CRSError):
         CRS.from_wkt('trash')
+
+
+def test_from_user_input_epsg():
+    assert 'init' in CRS.from_user_input('EPSG:4326')

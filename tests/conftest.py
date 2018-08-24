@@ -56,6 +56,15 @@ def data():
     return tmpdir
 
 
+@pytest.fixture(scope='function')
+def red_green():
+    """A temporary directory containing copies of red.tif, green.tif."""
+    tmpdir = py.test.ensuretemp('tests/data')
+    for filename in ['tests/data/red.tif', 'tests/data/red.tif.ovr', 'tests/data/green.tif', 'tests/data/green.tif.ovr']:
+        shutil.copy(filename, str(tmpdir))
+    return tmpdir
+
+
 @pytest.fixture
 def basic_geometry():
     """
@@ -209,7 +218,6 @@ def geojson_geomcollection():
             }
         )
     }
-
 
 
 @pytest.fixture
@@ -429,7 +437,7 @@ def rotated_image_file(tmpdir, pixelated_image):
     image = 128 * np.ones((1000, 2000), dtype=np.uint8)
 
     rotated_transform = Affine(-0.05, 0.07, 481060,
-                                0.07, 0.05, 4481030)
+                               0.07, 0.05, 4481030)
 
     outfilename = str(tmpdir.join('rotated_image.tif'))
     kwargs = {
@@ -474,6 +482,11 @@ def path_rgb_byte_tif(data_dir):
 @pytest.fixture(scope='session')
 def path_rgba_byte_tif(data_dir):
     return os.path.join(data_dir, 'RGBA.byte.tif')
+
+
+@pytest.fixture(scope='session')
+def path_rgb_msk_byte_tif(data_dir):
+    return os.path.join(data_dir, 'RGB2.byte.tif')
 
 
 @pytest.fixture(scope='function')

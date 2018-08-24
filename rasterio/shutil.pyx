@@ -7,16 +7,16 @@ import logging
 
 from rasterio._io cimport DatasetReaderBase
 from rasterio._err cimport exc_wrap_int, exc_wrap_pointer
-from rasterio.env import ensure_env
+from rasterio.env import ensure_env_credentialled
 from rasterio._err import CPLE_OpenFailedError
 from rasterio.errors import DriverRegistrationError, RasterioIOError
-from rasterio.vfs import parse_path, vsi_path
+from rasterio.path import parse_path, vsi_path
 
 
 log = logging.getLogger(__name__)
 
 
-@ensure_env
+@ensure_env_credentialled
 def exists(path):
 
     """Determine if a dataset exists by attempting to open it.
@@ -29,7 +29,7 @@ def exists(path):
 
     cdef GDALDatasetH h_dataset = NULL
 
-    gdal_path = vsi_path(*parse_path(path))
+    gdal_path = vsi_path(parse_path(path))
     b_path = gdal_path.encode('utf-8')
     cdef char* c_path = b_path
 
@@ -43,10 +43,11 @@ def exists(path):
         return False
     finally:
         with nogil:
-            GDALClose(h_dataset)
+            if h_dataset != NULL:
+                GDALClose(h_dataset)
 
 
-@ensure_env
+@ensure_env_credentialled
 def copy(src, dst, driver='GTiff', strict=True, **creation_options):
 
     """Copy a raster from a path or open dataset handle to a new destination
@@ -112,12 +113,14 @@ def copy(src, dst, driver='GTiff', strict=True, **creation_options):
     finally:
         CSLDestroy(options)
         with nogil:
-            GDALClose(dst_dataset)
+            if dst_dataset != NULL:
+                GDALClose(dst_dataset)
             if close_src:
-                GDALClose(src_dataset)
+                if src_dataset != NULL:
+                    GDALClose(src_dataset)
 
 
-@ensure_env
+@ensure_env_credentialled
 def copyfiles(src, dst):
 
     """Copy files associated with a dataset from one location to another.
@@ -135,8 +138,8 @@ def copyfiles(src, dst):
 
     # VFS paths probabaly don't work, but its hard to be completely certain
     # so just attempt to use them.
-    gdal_src_path = vsi_path(*parse_path(src))
-    gdal_dst_path = vsi_path(*parse_path(dst))
+    gdal_src_path = vsi_path(parse_path(src))
+    gdal_dst_path = vsi_path(parse_path(dst))
     b_gdal_src_path = gdal_src_path.encode('utf-8')
     b_gdal_dst_path = gdal_dst_path.encode('utf-8')
     cdef char* c_gdal_src_path = b_gdal_src_path
@@ -155,10 +158,11 @@ def copyfiles(src, dst):
         raise RasterioIOError(str(e))
     finally:
         with nogil:
-            GDALClose(h_dataset)
+            if h_dataset != NULL:
+                GDALClose(h_dataset)
 
 
-@ensure_env
+@ensure_env_credentialled
 def delete(path, driver=None):
 
     """Delete a GDAL dataset
@@ -175,7 +179,7 @@ def delete(path, driver=None):
     cdef GDALDatasetH h_dataset = NULL
     cdef GDALDriverH h_driver = NULL
 
-    gdal_path = vsi_path(*parse_path(path))
+    gdal_path = vsi_path(parse_path(path))
     b_path = gdal_path.encode('utf-8')
     cdef char* c_path = b_path
 
@@ -202,7 +206,8 @@ def delete(path, driver=None):
                 "Invalid dataset: {}".format(path))
         finally:
             with nogil:
-                GDALClose(h_dataset)
+                if h_dataset != NULL:
+                    GDALClose(h_dataset)
 
     with nogil:
         res = GDALDeleteDataset(h_driver, c_path)

@@ -14,14 +14,15 @@ from rasterio.errors import (
     GDALBehaviorChangeException, CRSError, GDALVersionError)
 from rasterio.warp import (
     reproject, transform_geom, transform, transform_bounds,
-    calculate_default_transform, SUPPORTED_RESAMPLING, GDAL2_RESAMPLING)
+    calculate_default_transform, aligned_target, SUPPORTED_RESAMPLING,
+    GDAL2_RESAMPLING)
 from rasterio import windows
 
 from .conftest import requires_gdal22
 
 
 gdal_version = GDALVersion.runtime()
-logging.basicConfig(stream=sys.stderr, level=logging.DEBUG)
+logging.basicConfig(level=logging.DEBUG)
 
 
 DST_TRANSFORM = Affine(300.0, 0.0, -8789636.708,
@@ -250,6 +251,24 @@ def test_calculate_default_transform_multiple_resolutions():
         assert dst_transform.almost_equals(target_transform)
         assert width == 12
         assert height == 20
+
+
+def test_calculate_default_transform_dimensions():
+    with rasterio.open('tests/data/RGB.byte.tif') as src:
+        dst_width, dst_height = (113, 103)
+        target_transform = Affine(
+            0.02108612597535966, 0.0, -78.95864996545055,
+            0.0, -0.0192823863230055, 25.550873767433984
+        )
+
+        dst_transform, width, height = calculate_default_transform(
+            src.crs, {'init': 'EPSG:4326'}, src.width, src.height,
+            *src.bounds, dst_width=dst_width, dst_height=dst_height
+        )
+
+        assert dst_transform.almost_equals(target_transform)
+        assert width == dst_width
+        assert height == dst_height
 
 
 def test_reproject_ndarray():
@@ -578,9 +597,11 @@ def test_reproject_no_init_nodata_tofile(tmpdir):
             init_dest_nodata=False
         )
 
-    # 200s should not be overwritten by 100s
+    # 200s should remain along with 100s
     with rasterio.open(tiffname) as src:
-        assert src.read().max() == 200
+        data = src.read()
+
+    assert data.max() == 200
 
 
 def test_reproject_no_init_nodata_toarray():
@@ -838,17 +859,17 @@ def test_reproject_resampling(path_rgb_byte_tif, method):
     # on running rasterio with each of the following configurations
     expected = {
         Resampling.nearest: 438113,
-        Resampling.bilinear: 553945,
-        Resampling.cubic: 553945,
-        Resampling.cubic_spline: 553945,
-        Resampling.lanczos: 553945,
-        Resampling.average: 556287,
-        Resampling.mode: 556287,
-        Resampling.max: 556287,
-        Resampling.min: 556287,
-        Resampling.med: 556287,
-        Resampling.q1: 556287,
-        Resampling.q3: 556287
+        Resampling.bilinear: 439280,
+        Resampling.cubic: 437888,
+        Resampling.cubic_spline: 440475,
+        Resampling.lanczos: 436001,
+        Resampling.average: 439419,
+        Resampling.mode: 437298,
+        Resampling.max: 439464,
+        Resampling.min: 436397,
+        Resampling.med: 437194,
+        Resampling.q1: 436397,
+        Resampling.q3: 438948
     }
 
     with rasterio.open(path_rgb_byte_tif) as src:
@@ -864,7 +885,43 @@ def test_reproject_resampling(path_rgb_byte_tif, method):
         dst_crs={'init': 'EPSG:3857'},
         resampling=method)
 
-    assert (out > 0).sum() == expected[method]
+    assert np.count_nonzero(out) == expected[method]
+
+
+@pytest.mark.parametrize("method", SUPPORTED_RESAMPLING)
+def test_reproject_resampling_alpha(method):
+    """Reprojection of a source with alpha band succeeds"""
+    # Expected count of nonzero pixels for each resampling method, based
+    # on running rasterio with each of the following configurations
+    expected = {
+        Resampling.nearest: 438113,
+        Resampling.bilinear: 439280,
+        Resampling.cubic: 437888,
+        Resampling.cubic_spline: 440475,
+        Resampling.lanczos: 436001,
+        Resampling.average: 439419,
+        Resampling.mode: 437298,
+        Resampling.max: 439464,
+        Resampling.min: 436397,
+        Resampling.med: 437194,
+        Resampling.q1: 436397,
+        Resampling.q3: 438948
+    }
+
+    with rasterio.open('tests/data/RGBA.byte.tif') as src:
+        source = src.read(1)
+
+    out = np.empty(src.shape, dtype=np.uint8)
+    reproject(
+        source,
+        out,
+        src_transform=src.transform,
+        src_crs=src.crs,
+        dst_transform=DST_TRANSFORM,
+        dst_crs={'init': 'EPSG:3857'},
+        resampling=method)
+
+    assert np.count_nonzero(out) == expected[method]
 
 
 @pytest.mark.skipif(
@@ -957,6 +1014,42 @@ def test_resample_default_invert_proj(method):
         resampling=method)
 
     assert out.mean() > 0
+
+
+def test_target_aligned_pixels():
+    """Issue 853 has been resolved"""
+    with rasterio.open('tests/data/world.rgb.tif') as src:
+        source = src.read(1)
+        profile = src.profile.copy()
+
+    dst_crs = {'init': 'epsg:3857'}
+
+    with rasterio.Env(CHECK_WITH_INVERT_PROJ=False):
+        # Calculate the ideal dimensions and transformation in the new crs
+        dst_affine, dst_width, dst_height = calculate_default_transform(
+            src.crs, dst_crs, src.width, src.height, *src.bounds)
+
+        dst_affine, dst_width, dst_height = aligned_target(dst_affine, dst_width, dst_height, 100000.0)
+
+        profile['height'] = dst_height
+        profile['width'] = dst_width
+
+        out = np.empty(shape=(dst_height, dst_width), dtype=np.uint8)
+
+        reproject(
+            source,
+            out,
+            src_transform=src.transform,
+            src_crs=src.crs,
+            dst_transform=dst_affine,
+            dst_crs=dst_crs,
+            resampling=Resampling.nearest)
+
+        # Check that there is no black borders
+        assert out[:, 0].all()
+        assert out[:, -1].all()
+        assert out[0, :].all()
+        assert out[-1, :].all()
 
 
 @pytest.mark.parametrize("method", SUPPORTED_RESAMPLING)
@@ -1133,3 +1226,91 @@ def test_issue1056():
             dst_transform=DST_TRANSFORM,
             dst_crs=dst_crs,
             resampling=Resampling.nearest)
+
+
+def test_reproject_dst_nodata():
+    """Affirm resolution of issue #1395"""
+    with rasterio.open('tests/data/RGB.byte.tif') as src:
+        source = src.read(1)
+
+    dst_crs = {'init': 'EPSG:3857'}
+    out = np.empty(src.shape, dtype=np.float32)
+    reproject(
+        source,
+        out,
+        src_transform=src.transform,
+        src_crs=src.crs,
+        dst_transform=DST_TRANSFORM,
+        dst_crs=dst_crs,
+        src_nodata=0,
+        dst_nodata=np.nan,
+        resampling=Resampling.nearest)
+
+    assert (out > 0).sum() == 438113
+    assert out[0, 0] != 0
+    assert np.isnan(out[0, 0])
+
+
+def test_issue1401():
+    """The warp_mem_limit keyword argument is in effect"""
+    with rasterio.open('tests/data/RGB.byte.tif') as src:
+        dst_crs = {'init': 'EPSG:3857'}
+        out = np.zeros(src.shape, dtype=np.uint8)
+        reproject(
+            rasterio.band(src, 2),
+            out,
+            src_transform=src.transform,
+            src_crs=src.crs,
+            dst_transform=DST_TRANSFORM,
+            dst_crs=dst_crs,
+            resampling=Resampling.nearest,
+            warp_mem_limit=4000)
+
+
+def test_reproject_dst_alpha(path_rgb_msk_byte_tif):
+    """Materialization of external mask succeeds"""
+
+    with rasterio.open(path_rgb_msk_byte_tif) as src:
+
+        nrows, ncols = src.shape
+
+        dst_arr = np.zeros((src.count + 1, nrows, ncols), dtype=np.uint8)
+
+        reproject(
+            rasterio.band(src, src.indexes),
+            dst_arr,
+            src_transform=src.transform,
+            src_crs=src.crs,
+            dst_transform=DST_TRANSFORM,
+            dst_crs={'init': 'EPSG:3857'},
+            dst_alpha=4)
+
+        assert dst_arr[3].any()
+
+
+@pytest.mark.xfail(
+    rasterio.__gdal_version__ in ['2.2.0', '2.2.1', '2.2.2', '2.2.3'],
+    reason=("GDAL had regression in 2.2.X series, fixed in 2.2.4,"
+            " reproject used dst index instead of src index when destination was single band"))
+def test_issue1350():
+    """Warp bands other than 1 or All"""
+
+    with rasterio.open('tests/data/RGB.byte.tif') as src:
+        dst_crs = {'init': 'EPSG:3857'}
+
+        reprojected = []
+
+        for dtype, idx in zip(src.dtypes, src.indexes):
+            out = np.zeros((1,) + src.shape, dtype=dtype)
+
+            reproject(
+                rasterio.band(src, idx),
+                out,
+                resampling=Resampling.nearest,
+                dst_transform=DST_TRANSFORM,
+                dst_crs=dst_crs)
+
+            reprojected.append(out)
+
+        for i in range(1, len(reprojected)):
+            assert not (reprojected[0] == reprojected[i]).all()

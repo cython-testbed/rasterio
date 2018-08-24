@@ -5,7 +5,7 @@ from collections import namedtuple
 import numpy as np
 import pytest
 from affine import Affine
-from hypothesis import given, assume
+from hypothesis import given, assume, settings, HealthCheck
 from hypothesis.strategies import floats, integers
 
 import rasterio
@@ -26,7 +26,6 @@ F_LEN = floats(min_value=0, max_value=1.0e+7)
 I_LEN = integers(min_value=0, max_value=1.0e+7)
 
 
-
 logging.basicConfig(stream=sys.stderr, level=logging.DEBUG)
 
 
@@ -34,15 +33,15 @@ def assert_window_almost_equals(a, b):
     assert np.allclose(a.flatten(), b.flatten(), rtol=1e-3, atol=1e-4)
 
 
-
 def test_window_repr():
     assert str(Window(0, 1, 4, 2)) == ('Window(col_off=0, row_off=1, width=4, '
                                        'height=2)')
 
 
+@settings(suppress_health_check=[HealthCheck.filter_too_much])
 @given(col_off=F_OFF, row_off=F_OFF, width=F_LEN, height=F_LEN)
 def test_window_class(col_off, row_off, width, height):
-    """Floating point inputs should not be rounded, and 0 values should not 
+    """Floating point inputs should not be rounded, and 0 values should not
     raise errors"""
 
     window = Window(col_off, row_off, width, height)
@@ -63,6 +62,7 @@ def test_window_class_invalid_inputs():
         Window(0, 0, 10, -2)
 
 
+@settings(suppress_health_check=[HealthCheck.filter_too_much])
 @given(col_off=F_OFF, row_off=F_OFF, width=F_LEN, height=F_LEN)
 def test_window_flatten(col_off, row_off, width, height):
     """Flattened window should match inputs"""
@@ -72,6 +72,7 @@ def test_window_flatten(col_off, row_off, width, height):
         (col_off, row_off, width, height))
 
 
+@settings(suppress_health_check=[HealthCheck.filter_too_much])
 @given(col_off=F_OFF, row_off=F_OFF, width=F_LEN, height=F_LEN)
 def test_window_todict(col_off, row_off, width, height):
     """Dictionary of window should match inputs"""
@@ -83,6 +84,7 @@ def test_window_todict(col_off, row_off, width, height):
         (col_off, row_off, width, height))
 
 
+@settings(suppress_health_check=[HealthCheck.filter_too_much])
 @given(col_off=F_OFF, row_off=F_OFF, width=F_LEN, height=F_LEN)
 def test_window_toranges(col_off, row_off, width, height):
     """window.toranges() should match inputs"""
@@ -92,6 +94,7 @@ def test_window_toranges(col_off, row_off, width, height):
         ((row_off, row_off + height), (col_off, col_off + width)))
 
 
+@settings(suppress_health_check=[HealthCheck.filter_too_much])
 @given(col_off=F_OFF, row_off=F_OFF, width=F_LEN, height=F_LEN)
 def test_window_toslices(col_off, row_off, width, height):
     """window.toslices() should match inputs"""
@@ -107,6 +110,7 @@ def test_window_toslices(col_off, row_off, width, height):
     )
 
 
+@settings(suppress_health_check=[HealthCheck.filter_too_much])
 @given(col_off=F_LEN, row_off=F_LEN, col_stop=F_LEN, row_stop=F_LEN)
 def test_window_fromslices(col_off, row_off, col_stop, row_stop):
     """Empty and non-empty absolute windows from slices, tuples, or lists
@@ -119,7 +123,6 @@ def test_window_fromslices(col_off, row_off, col_stop, row_stop):
     rows = (row_off, row_stop)
     cols = (col_off, col_stop)
     expected = (col_off, row_off, col_stop - col_off, row_stop - row_off)
-
 
     assert np.allclose(
         Window.from_slices(rows=slice(*rows), cols=slice(*cols)).flatten(),
@@ -170,6 +173,7 @@ def test_window_fromslices_stops_lt_starts():
     )
 
 
+@settings(suppress_health_check=[HealthCheck.filter_too_much])
 @given(abs_off=F_LEN, imp_off=F_LEN, stop=F_LEN, dim=F_LEN)
 def test_window_fromslices_implicit(abs_off, imp_off, stop, dim):
     """ providing None for start index will default to 0
@@ -269,6 +273,7 @@ def test_window_fromslices_negative_stop():
     )
 
 
+@settings(suppress_health_check=[HealthCheck.filter_too_much])
 @given(col_off=F_LEN, row_off=F_LEN, col_stop=F_LEN, row_stop=F_LEN)
 def test_window_fromslices_boundless(col_off, row_off, col_stop, row_stop):
 
@@ -284,6 +289,7 @@ def test_window_fromslices_boundless(col_off, row_off, col_stop, row_stop):
     )
 
 
+@settings(suppress_health_check=[HealthCheck.filter_too_much])
 @given(col_off=F_OFF, row_off=F_OFF, num_cols=F_LEN, num_rows=F_LEN,
        height=I_LEN, width=I_LEN)
 def test_crop(col_off, row_off, num_cols, num_rows, height, width):
@@ -443,12 +449,6 @@ def test_window_from_slices():
     assert Window.from_slices((0, 1), (2, 3)) == Window.from_slices((0, 1), (2, 3))
 
 
-def test_window_from_offlen():
-    """from_offlen classmethod works."""
-    with pytest.warns(RasterioDeprecationWarning):
-        assert Window.from_offlen(2, 0, 1, 1) == Window.from_slices((0, 1), (2, 3))
-
-
 def test_read_with_window_class(path_rgb_byte_tif):
     """Reading subset with Window class works"""
     with rasterio.open(path_rgb_byte_tif) as src:
@@ -561,3 +561,13 @@ def test_round_window_boundless(path_alpha_tif):
         assert rounded_window.height % height_shape == 0
         assert rounded_window.col_off % width_shape == 0
         assert rounded_window.width % width_shape == 0
+
+
+def test_round_lengths_no_op_error():
+    with pytest.raises(WindowError):
+        Window(0, 0, 1, 1).round_lengths(op='lolwut')
+
+
+def test_round_offsets_no_op_error():
+    with pytest.raises(WindowError):
+        Window(0, 0, 1, 1).round_offsets(op='lolwut')

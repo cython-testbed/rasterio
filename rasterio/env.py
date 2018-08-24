@@ -13,8 +13,8 @@ from rasterio._env import (
 from rasterio.compat import string_types, getargspec
 from rasterio.dtypes import check_dtype
 from rasterio.errors import EnvError, GDALVersionError
+from rasterio.path import parse_path
 from rasterio.transform import guard_transform
-from rasterio.vfs import parse_path, vsi_path
 
 
 class ThreadEnv(threading.local):
@@ -51,12 +51,6 @@ local = ThreadEnv()
 
 log = logging.getLogger(__name__)
 
-# Rasterio defaults
-default_options = {
-    'CHECK_WITH_INVERT_PROJ': True,
-    'GTIFF_IMPLICIT_JPEG_OVR': False,
-    "RASTERIO_ENV": True
-}
 
 class Env(object):
     """Abstraction for GDAL and AWS configuration
@@ -91,9 +85,28 @@ class Env(object):
     for GDAL as needed.
     """
 
-    def __init__(self, session=None, aws_access_key_id=None,
-                 aws_secret_access_key=None, aws_session_token=None,
-                 region_name=None, profile_name=None, **options):
+    @classmethod
+    def default_options(cls):
+        """Default configuration options
+
+        Parameters
+        ----------
+        None
+
+        Returns
+        -------
+        dict
+        """
+        return {
+            'CHECK_WITH_INVERT_PROJ': True,
+            'GTIFF_IMPLICIT_JPEG_OVR': False,
+            "RASTERIO_ENV": True
+        }
+
+    def __init__(
+            self, session=None, aws_unsigned=False, aws_access_key_id=None,
+            aws_secret_access_key=None, aws_session_token=None,
+            region_name=None, profile_name=None, **options):
         """Create a new GDAL/AWS environment.
 
         Note: this class is a context manager. GDAL isn't configured
@@ -101,35 +114,41 @@ class Env(object):
 
         Parameters
         ----------
-        session: object, optional
-            A boto3 session.
-        aws_access_key_id: string, optional
+        session : optional
+            A boto3 session object.
+        aws_unsigned : bool, optional (default: False)
+            If True, requests will be unsigned.
+        aws_access_key_id : str, optional
             An access key id, as per boto3.
-        aws_secret_access_key: string, optional
+        aws_secret_access_key : str, optional
             A secret access key, as per boto3.
-        aws_session_token: string, optional
+        aws_session_token : str, optional
             A session token, as per boto3.
-        region_name: string, optional
+        region_name : str, optional
             A region name, as per boto3.
-        profile_name: string, optional
+        profile_name : str, optional
             A shared credentials profile name, as per boto3.
-        **options: optional
+        **options : optional
             A mapping of GDAL configuration options, e.g.,
             `CPL_DEBUG=True, CHECK_WITH_INVERT_PROJ=False`.
 
         Returns
         -------
-        A new instance of Env.
+        Env
 
-        Note: We raise EnvError if the GDAL config options
+        Notes
+        -----
+        We raise EnvError if the GDAL config options
         AWS_ACCESS_KEY_ID or AWS_SECRET_ACCESS_KEY are given. AWS
         credentials are handled exclusively by boto3.
+
         """
         if ('AWS_ACCESS_KEY_ID' in options or
                 'AWS_SECRET_ACCESS_KEY' in options):
             raise EnvError(
                 "GDAL's AWS config options can not be directly set. "
                 "AWS credentials are handled exclusively by boto3.")
+        self.aws_unsigned = aws_unsigned
         self.aws_access_key_id = aws_access_key_id
         self.aws_secret_access_key = aws_secret_access_key
         self.aws_session_token = aws_session_token
@@ -142,8 +161,38 @@ class Env(object):
 
         self._creds = None
 
+    @classmethod
+    def from_defaults(cls, *args, **kwargs):
+        """Create an environment with default config options
+
+        Parameters
+        ----------
+        args : optional
+            Positional arguments for Env()
+        kwargs : optional
+            Keyword arguments for Env()
+
+        Returns
+        -------
+        Env
+
+        Notes
+        -----
+        The items in kwargs will be overlaid on the default values.
+
+        """
+        options = Env.default_options()
+        options.update(**kwargs)
+        return Env(*args, **options)
+
     @property
     def is_credentialized(self):
+        """Test for existence of cloud credentials
+
+        Returns
+        -------
+        bool
+        """
         return bool(self._creds)
 
     def credentialize(self):
@@ -151,8 +200,15 @@ class Env(object):
 
         Note well: this method is a no-op if the GDAL environment
         already has credentials, unless session is not None.
+
+        Returns
+        -------
+        None
         """
-        if not hascreds():
+        if hascreds():
+            pass
+
+        else:
             import boto3
             if not self.session and not self.aws_access_key_id and not self.profile_name:
                 self.session = boto3.Session()
@@ -170,14 +226,19 @@ class Env(object):
 
             # Pass these credentials to the GDAL environment.
             cred_opts = {}
-            if self._creds.access_key:  # pragma: no branch
-                cred_opts['AWS_ACCESS_KEY_ID'] = self._creds.access_key
-            if self._creds.secret_key:  # pragma: no branch
-                cred_opts['AWS_SECRET_ACCESS_KEY'] = self._creds.secret_key
-            if self._creds.token:
-                cred_opts['AWS_SESSION_TOKEN'] = self._creds.token
-            if self.session.region_name:
-                cred_opts['AWS_REGION'] = self.session.region_name
+
+            if self.aws_unsigned:
+                cred_opts['AWS_NO_SIGN_REQUEST'] = 'YES'
+            else:
+                if self._creds.access_key:  # pragma: no branch
+                    cred_opts['AWS_ACCESS_KEY_ID'] = self._creds.access_key
+                if self._creds.secret_key:  # pragma: no branch
+                    cred_opts['AWS_SECRET_ACCESS_KEY'] = self._creds.secret_key
+                if self._creds.token:
+                    cred_opts['AWS_SESSION_TOKEN'] = self._creds.token
+                if self.session.region_name:
+                    cred_opts['AWS_REGION'] = self.session.region_name
+
             self.options.update(**cred_opts)
             setenv(**cred_opts)
 
@@ -199,8 +260,7 @@ class Env(object):
             # defined.  This MUST happen before calling 'defenv()'.
             local._discovered_options = {}
             # Don't want to reinstate the "RASTERIO_ENV" option.
-            probe_env = {k for k in default_options if k != "RASTERIO_ENV"}
-            probe_env |= set(self.options.keys())
+            probe_env = {k for k in self.options.keys() if k != "RASTERIO_ENV"}
             for key in probe_env:
                 val = get_gdal_config(key, normalize=False)
                 if val is not None:
@@ -246,12 +306,7 @@ def defenv(**options):
     else:
         log.debug("No GDAL environment exists")
         local._env = GDALEnv()
-        # first set default options, then add user options
-        set_options = {}
-        for d in (default_options, options):
-            for (k, v) in d.items():
-                set_options[k] = v
-        local._env.update_config_options(**set_options)
+        local._env.update_config_options(**options)
         log.debug(
             "New GDAL environment %r created", local._env)
     local._env.start()
@@ -299,14 +354,55 @@ def delenv():
 def ensure_env(f):
     """A decorator that ensures an env exists before a function
     calls any GDAL C functions."""
-    if local._env:
-        return f
-    else:
-        @wraps(f)
-        def wrapper(*args, **kwds):
-            with Env():
+    @wraps(f)
+    def wrapper(*args, **kwds):
+        if local._env:
+            return f(*args, **kwds)
+        else:
+            with Env.from_defaults():
                 return f(*args, **kwds)
-        return wrapper
+    return wrapper
+
+
+def ensure_env_credentialled(f):
+    """Ensures a config environment exists and is credentialized
+
+    Parameters
+    ----------
+    f : function
+        A function.
+
+    Returns
+    -------
+    A function wrapper.
+
+    Notes
+    -----
+    The function wrapper checks the first argument of f and
+    credentializes the environment if the first argument is a URI with
+    scheme "s3".
+
+    """
+    @wraps(f)
+    def wrapper(*args, **kwds):
+        if local._env:
+            env_ctor = Env
+        else:
+            env_ctor = Env.from_defaults
+        with env_ctor() as wrapper_env:
+            if isinstance(args[0], str):
+                path = parse_path(args[0])
+                scheme = getattr(path, 'scheme', None)
+                if scheme == 's3':
+                    wrapper_env.credentialize()
+                    log.debug("Credentialized: {!r}".format(getenv()))
+                else:
+                    pass
+            else:
+                pass
+            return f(*args, **kwds)
+
+    return wrapper
 
 
 @attr.s(slots=True)
@@ -476,8 +572,8 @@ def require_gdal_version(version, param=None, values=None, is_max_version=False,
                     elif full_kwds[param] in values:
                         raise GDALVersionError(
                             'parameter "{0}={1}" requires '
-                            'GDAL {2} {3}{4}'.format(param, full_kwds[param],
-                                                  inequality, version, reason))
+                            'GDAL {2} {3}{4}'.format(
+                                param, full_kwds[param], inequality, version, reason))
 
             return f(*args, **kwds)
 

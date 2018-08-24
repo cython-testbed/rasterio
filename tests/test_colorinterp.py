@@ -11,12 +11,14 @@ from .conftest import requires_gdal22
 def test_cmyk_interp(tmpdir):
     """A CMYK TIFF has cyan, magenta, yellow, black bands."""
     with rasterio.open('tests/data/RGB.byte.tif') as src:
-        meta = src.meta
-    meta['photometric'] = 'CMYK'
-    meta['count'] = 4
+        profile = src.profile
+
+    profile['photometric'] = 'cmyk'
+    profile['count'] = 4
+
     tiffname = str(tmpdir.join('foo.tif'))
-    with rasterio.open(tiffname, 'w', **meta) as dst:
-        assert dst.profile['photometric'] == 'cmyk'
+    with rasterio.open(tiffname, 'w', **profile) as dst:
+        assert dst.profile['count'] == 4
         assert dst.colorinterp == (
             ColorInterp.cyan,
             ColorInterp.magenta,
@@ -84,8 +86,10 @@ def test_set_colorinterp(path_rgba_byte_tif, tmpdir, dtype):
 
 @pytest.mark.parametrize("ci", ColorInterp.__members__.values())
 def test_set_colorinterp_all(path_4band_no_colorinterp, ci):
-
     """Test setting with all color interpretations."""
+
+    if ci.value == 1:
+        pytest.xfail("Setting colorinterp to gray fails with GDAL 2.3, see https://github.com/mapbox/rasterio/issues/1234")
 
     with rasterio.open(path_4band_no_colorinterp, 'r+') as src:
         all_ci = list(src.colorinterp)
